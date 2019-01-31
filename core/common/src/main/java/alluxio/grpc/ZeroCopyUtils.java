@@ -45,10 +45,6 @@ public class ZeroCopyUtils {
   private static final Class<?> bufChainOut;
   private static final Field READABLE_BUFFER;
   private static final Class<?> BUFFER_INPUT_STREAM;
-  private static final Map<ReadResponse, WeakReference<ByteBuf>> mBufferMap =
-      new ConcurrentIdentityHashMap<>();
-  private static final Map<ReadResponse, ReadableBuffer> mReadableBufferMap =
-      new ConcurrentIdentityHashMap<>();
   static {
     Field tmpField = null;
     Class<?> tmpClazz = null;
@@ -105,26 +101,6 @@ public class ZeroCopyUtils {
     listAdd = tmpListAdd;
     bufChainOut = tmpBufChainOut;
 
-  }
-
-  public static void pushByteBuf(ByteBuf buf, ReadResponse response) {
-    mBufferMap.put(response, new WeakReference<>(buf));
-  }
-
-  public static ByteBuf popTrackedNettyBuffer(ReadResponse response) {
-    WeakReference<ByteBuf> buf = mBufferMap.remove(response);
-    return buf == null ? null : buf.get();
-  }
-
-  public static void pushReadableBuffer(ReadableBuffer buf, ReadResponse response) {
-    mReadableBufferMap.put(response, buf);
-  }
-
-  public static ReadableBuffer popReadableBuffer(ReadResponse response) {
-    ReadableBuffer buf = mReadableBufferMap.get(response);
-    if (!mReadableBufferMap.remove(response, buf)) {
-    }
-    return buf;
   }
 
   public static ReadableBuffer getReadableBuffer(InputStream is) {
