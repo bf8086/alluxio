@@ -23,6 +23,7 @@ import alluxio.grpc.RemoveBlockRequest;
 import alluxio.grpc.RemoveBlockResponse;
 import alluxio.grpc.WriteRequest;
 import alluxio.grpc.WriteResponse;
+import alluxio.network.protocol.databuffer.DataBuffer;
 
 import io.grpc.stub.StreamObserver;
 import io.grpc.StatusRuntimeException;
@@ -83,7 +84,7 @@ public interface BlockWorkerClient extends Closeable {
    * @param responseObserver the stream observer for the server response
    * @return the stream observer for the client request
    */
-  StreamObserver<ReadRequest> readBlock(StreamObserver<ReadResponse> responseObserver);
+  StreamObserver<ReadRequest> readBlock(StreamObserver<DataMessage<ReadResponse, DataBuffer>> responseObserver);
 
   /**
    * Creates a local block on the worker. This is a two stage operations:

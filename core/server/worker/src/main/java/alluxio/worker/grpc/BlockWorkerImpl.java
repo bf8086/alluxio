@@ -17,6 +17,7 @@ import alluxio.grpc.AsyncCacheResponse;
 import alluxio.grpc.BlockWorkerGrpc;
 import alluxio.grpc.CreateLocalBlockRequest;
 import alluxio.grpc.CreateLocalBlockResponse;
+import alluxio.grpc.MessageSerializer;
 import alluxio.grpc.OpenLocalBlockRequest;
 import alluxio.grpc.OpenLocalBlockResponse;
 import alluxio.grpc.ReadRequest;
@@ -24,16 +25,23 @@ import alluxio.grpc.ReadResponse;
 import alluxio.grpc.RemoveBlockRequest;
 import alluxio.grpc.RemoveBlockResponse;
 import alluxio.grpc.WriteResponse;
+import alluxio.grpc.ZeroCopyUtils;
 import alluxio.util.IdUtils;
 import alluxio.worker.WorkerProcess;
 import alluxio.worker.block.AsyncCacheRequestManager;
 import alluxio.worker.block.BlockWorker;
 
+import com.google.common.collect.ImmutableMap;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+import io.grpc.MethodDescriptor;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * Server side implementation of the gRPC BlockWorker interface.
@@ -44,6 +52,7 @@ public class BlockWorkerImpl extends BlockWorkerGrpc.BlockWorkerImplBase {
 
   private WorkerProcess mWorkerProcess;
   private final AsyncCacheRequestManager mRequestManager;
+  private ReadResponseSerializer mReadResponseSerializer = new ReadResponseSerializer(BlockWorkerGrpc.getReadBlockMethod().getResponseMarshaller());
 
   /**
    * Creates a new implementation of gRPC BlockWorker interface.
@@ -56,10 +65,16 @@ public class BlockWorkerImpl extends BlockWorkerGrpc.BlockWorkerImplBase {
         GrpcExecutors.ASYNC_CACHE_MANAGER_EXECUTOR, mWorkerProcess.getWorker(BlockWorker.class));
   }
 
+  public Map<MethodDescriptor, io.grpc.MethodDescriptor.Marshaller> getMarshallers() {
+    return ImmutableMap.of(BlockWorkerGrpc.getReadBlockMethod(), new ZeroCopyUtils.SerilizationMarshaller(
+        mReadResponseSerializer));
+  }
+
   @Override
   public StreamObserver<ReadRequest> readBlock(StreamObserver<ReadResponse> responseObserver) {
     BlockReadHandler readHandler = new BlockReadHandler(GrpcExecutors.BLOCK_READER_EXECUTOR,
-        mWorkerProcess.getWorker(BlockWorker.class), responseObserver);
+        mWorkerProcess.getWorker(BlockWorker.class),
+        new DataMessageServerStreamObserver<>((ServerCallStreamObserver<ReadResponse>)responseObserver, mReadResponseSerializer));
     ServerCallStreamObserver<ReadResponse> serverCallStreamObserver =
         (ServerCallStreamObserver<ReadResponse>) responseObserver;
     serverCallStreamObserver.setOnReadyHandler(readHandler::onReady);

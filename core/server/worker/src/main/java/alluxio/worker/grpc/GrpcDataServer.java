@@ -16,11 +16,13 @@ import alluxio.conf.PropertyKey;
 import alluxio.grpc.GrpcServer;
 import alluxio.grpc.GrpcServerBuilder;
 import alluxio.grpc.GrpcService;
+import alluxio.grpc.ZeroCopyUtils;
 import alluxio.network.ChannelType;
 import alluxio.util.network.NettyUtils;
 import alluxio.worker.DataServer;
 import alluxio.worker.WorkerProcess;
 
+import io.grpc.internal.AbstractStream;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
@@ -32,6 +34,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.concurrent.TimeUnit;
@@ -55,6 +59,7 @@ public final class GrpcDataServer implements DataServer {
 
   private final long mFlowControlWindow =
       ServerConfiguration.getBytes(PropertyKey.WORKER_NETWORK_FLOWCONTROL_WINDOW);
+  private final long mMaxInboundMessageSize = 40 * 1024 * 1024;
   private final long mQuietPeriodMs =
       ServerConfiguration.getMs(PropertyKey.WORKER_NETWORK_NETTY_SHUTDOWN_QUIET_PERIOD);
 
@@ -73,12 +78,17 @@ public final class GrpcDataServer implements DataServer {
   public GrpcDataServer(final SocketAddress address, final WorkerProcess workerProcess) {
     mSocketAddress = address;
     try {
+      BlockWorkerImpl blockWorkerService = new BlockWorkerImpl(workerProcess);
       mServer = createServerBuilder(address, NettyUtils.getWorkerChannel(
           ServerConfiguration.global()))
-          .addService(new GrpcService(new BlockWorkerImpl(workerProcess)))
+          .addService(new GrpcService(
+              ZeroCopyUtils.useZeroCopyMessages(blockWorkerService.bindService(),
+                  blockWorkerService.getMarshallers())
+          ))
           .flowControlWindow((int) mFlowControlWindow)
           .keepAliveTime(mKeepAliveTimeMs, TimeUnit.MILLISECONDS)
           .keepAliveTimeout(mKeepAliveTimeoutMs, TimeUnit.MILLISECONDS)
+          .maxInboundMessageSize((int) mMaxInboundMessageSize)
           .build()
           .start();
       // There is no way to query domain socket address afterwards.
@@ -91,6 +101,14 @@ public final class GrpcDataServer implements DataServer {
       throw new RuntimeException(e);
     }
     LOG.info("Server started, listening on {}", address.toString());
+
+    try {
+      setFinalStatic(
+          AbstractStream.TransportState.class.getField("DEFAULT_ONREADY_THRESHOLD"),
+          8 * 1024 * 1024);
+    } catch (Exception e) {
+      LOG.error("Server failed to update buffer threshold {}", address.toString(), e);
+    }
   }
 
   private GrpcServerBuilder createServerBuilder(SocketAddress address, ChannelType type) {
@@ -167,5 +185,15 @@ public final class GrpcDataServer implements DataServer {
   @Override
   public void awaitTermination() {
     mServer.awaitTermination();
+  }
+
+  static void setFinalStatic(Field field, Object newValue) throws Exception {
+    field.setAccessible(true);
+
+    Field modifiersField = Field.class.getDeclaredField("modifiers");
+    modifiersField.setAccessible(true);
+    modifiersField.setInt(field, field.getModifiers() & ~Modifier.FINAL);
+
+    field.set(null, newValue);
   }
 }

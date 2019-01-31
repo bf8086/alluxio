@@ -11,6 +11,7 @@
 
 package alluxio.worker.grpc;
 
+import alluxio.client.block.stream.DataMessage;
 import alluxio.conf.PropertyKey;
 import alluxio.conf.ServerConfiguration;
 import alluxio.exception.status.AlluxioStatusException;
@@ -18,6 +19,7 @@ import alluxio.exception.status.InvalidArgumentException;
 import alluxio.grpc.Chunk;
 import alluxio.grpc.GrpcExceptionUtils;
 import alluxio.grpc.ReadResponse;
+import alluxio.grpc.ZeroCopyUtils;
 import alluxio.network.protocol.databuffer.DataBuffer;
 import alluxio.resource.LockResource;
 
@@ -27,11 +29,15 @@ import com.google.common.base.Preconditions;
 import com.google.protobuf.UnsafeByteOperations;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import io.grpc.internal.SerializingExecutor;
+import io.grpc.stub.CallStreamObserver;
 import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
+import io.netty.buffer.ByteBuf;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -70,6 +76,8 @@ abstract class AbstractReadHandler<T extends ReadRequestContext<?>>
   /** The executor to run {@link DataReader}. */
   private final ExecutorService mDataReaderExecutor;
 
+  private Executor mSerializingExecutor;
+
   private final ReentrantLock mLock = new ReentrantLock();
 
   /**
@@ -78,7 +86,7 @@ abstract class AbstractReadHandler<T extends ReadRequestContext<?>>
    * visible across both gRPC and I/O threads, meanwhile no atomicity of operation is assumed;
    */
   private volatile T mContext;
-  private StreamObserver<ReadResponse> mResponseObserver;
+  private StreamObserver<DataMessage<ReadResponse, ByteBuf>> mResponseObserver;
 
   /**
    * Creates an instance of {@link AbstractReadHandler}.
@@ -87,8 +95,9 @@ abstract class AbstractReadHandler<T extends ReadRequestContext<?>>
    * @param responseObserver the response observer of the
    */
   AbstractReadHandler(ExecutorService executorService,
-      StreamObserver<ReadResponse> responseObserver) {
+      StreamObserver<DataMessage<ReadResponse, ByteBuf>> responseObserver) {
     mDataReaderExecutor = executorService;
+    mSerializingExecutor = new SerializingExecutor(executorService);
     mResponseObserver = responseObserver;
   }
 
@@ -105,7 +114,8 @@ abstract class AbstractReadHandler<T extends ReadRequestContext<?>>
       mDataReaderExecutor.submit(createDataReader(mContext, mResponseObserver));
       mContext.setDataReaderActive(true);
     } catch (Exception e) {
-      mResponseObserver.onError(GrpcExceptionUtils.fromThrowable(e));
+      mSerializingExecutor.execute(() ->
+          mResponseObserver.onError(GrpcExceptionUtils.fromThrowable(e)));
     }
   }
 
@@ -199,7 +209,7 @@ abstract class AbstractReadHandler<T extends ReadRequestContext<?>>
    * @return the data reader for this handler
    */
   protected abstract DataReader createDataReader(T context,
-      StreamObserver<ReadResponse> channel);
+      StreamObserver<DataMessage<ReadResponse, ByteBuf>> channel);
 
   public void onReady() {
     try (LockResource lr = new LockResource(mLock)) {
@@ -235,7 +245,7 @@ abstract class AbstractReadHandler<T extends ReadRequestContext<?>>
    * A runnable that reads data and writes them to the channel.
    */
   protected abstract class DataReader implements Runnable {
-    private final ServerCallStreamObserver<ReadResponse> mResponse;
+    private final CallStreamObserver<DataMessage<ReadResponse, ByteBuf>> mResponse;
     private final T mContext;
     private final ReadRequest mRequest;
     private final long mChunkSize;
@@ -246,11 +256,11 @@ abstract class AbstractReadHandler<T extends ReadRequestContext<?>>
      * @param context context of the request to complete
      * @param response the response
      */
-    DataReader(T context, StreamObserver<ReadResponse> response) {
+    DataReader(T context, StreamObserver<DataMessage<ReadResponse, ByteBuf>> response) {
       mContext = context;
       mRequest = context.getRequest();
       mChunkSize = Math.min(mRequest.getChunkSize(), MAX_CHUNK_SIZE);
-      mResponse = (ServerCallStreamObserver<ReadResponse>) response;
+      mResponse = (CallStreamObserver<DataMessage<ReadResponse, ByteBuf>>) response;
     }
 
     @Override
@@ -302,20 +312,27 @@ abstract class AbstractReadHandler<T extends ReadRequestContext<?>>
           }
 
           if (chunk != null) {
-            ReadResponse response = ReadResponse.newBuilder().setChunk(Chunk.newBuilder()
-                .setData(UnsafeByteOperations.unsafeWrap(chunk.getReadOnlyByteBuffer())).build())
-                .build();
-            mResponse.onNext(response);
-            incrementMetrics(chunk.getLength());
+            DataBuffer finalChunk = chunk;
+//            System.out.println("send " + chunk.readableBytes());
+            mSerializingExecutor.execute(() -> {
+              try {
+                ReadResponse response = ReadResponse.newBuilder().build();
+                mResponse.onNext(new DataMessage<>(response, (ByteBuf) finalChunk.getNettyOutput()));
+                incrementMetrics(finalChunk.getLength());
+              } catch (Exception e) {
+                LOG.error("Failed to read data.", e);
+                setError(new Error(AlluxioStatusException.fromThrowable(e), true));
+              } finally {
+                if (finalChunk != null) {
+                  finalChunk.release();
+                }
+              }
+            });
           }
         } catch (Exception e) {
           LOG.error("Failed to read data.", e);
           setError(new Error(AlluxioStatusException.fromThrowable(e), true));
           continue;
-        } finally {
-          if (chunk != null) {
-            chunk.release();
-          }
         }
       }
 
@@ -360,51 +377,57 @@ abstract class AbstractReadHandler<T extends ReadRequestContext<?>>
      * @param len The length, in bytes, of the data to read from the block
      * @return a {@link DataBuffer} representing the data
      */
-    protected abstract DataBuffer getDataBuffer(T context, StreamObserver<ReadResponse> response,
+    protected abstract DataBuffer getDataBuffer(T context, StreamObserver<DataMessage<ReadResponse, ByteBuf>> response,
         long offset, int len) throws Exception;
 
     /**
      * Writes an error read response to the channel and closes the channel after that.
      */
     private void replyError(Error error) {
-      try {
-        mResponse.onError(GrpcExceptionUtils.toGrpcStatusException(error.getCause()));
-      } catch (StatusRuntimeException e) {
-        // Ignores the error when client already closed the stream.
-        if (e.getStatus().getCode() != Status.Code.CANCELLED) {
-          throw e;
+      mSerializingExecutor.execute(() -> {
+        try {
+          mResponse.onError(GrpcExceptionUtils.toGrpcStatusException(error.getCause()));
+        } catch (StatusRuntimeException e) {
+          // Ignores the error when client already closed the stream.
+          if (e.getStatus().getCode() != Status.Code.CANCELLED) {
+            throw e;
+          }
         }
-      }
+      });
     }
 
     /**
      * Writes a success response.
      */
     private void replyEof() {
-      try {
-        Preconditions.checkState(!mContext.isDoneUnsafe());
-        mContext.setDoneUnsafe(true);
-        mResponse.onCompleted();
-      } catch (StatusRuntimeException e) {
-        if (e.getStatus().getCode() != Status.Code.CANCELLED) {
-          throw e;
+      mSerializingExecutor.execute(() -> {
+        try {
+          Preconditions.checkState(!mContext.isDoneUnsafe());
+          mContext.setDoneUnsafe(true);
+          mResponse.onCompleted();
+        } catch (StatusRuntimeException e) {
+          if (e.getStatus().getCode() != Status.Code.CANCELLED) {
+            throw e;
+          }
         }
-      }
+      });
     }
 
     /**
      * Writes a cancel response.
      */
     private void replyCancel() {
-      try {
-        Preconditions.checkState(!mContext.isDoneUnsafe());
-        mContext.setDoneUnsafe(true);
-        mResponse.onCompleted();
-      } catch (StatusRuntimeException e) {
-        if (e.getStatus().getCode() != Status.Code.CANCELLED) {
-          throw e;
+      mSerializingExecutor.execute(() -> {
+        try {
+          Preconditions.checkState(!mContext.isDoneUnsafe());
+          mContext.setDoneUnsafe(true);
+          mResponse.onCompleted();
+        } catch (StatusRuntimeException e) {
+          if (e.getStatus().getCode() != Status.Code.CANCELLED) {
+            throw e;
+          }
         }
-      }
+      });
     }
   }
 }

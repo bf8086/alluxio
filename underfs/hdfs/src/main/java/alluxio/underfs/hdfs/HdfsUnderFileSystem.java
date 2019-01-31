@@ -158,7 +158,9 @@ public class HdfsUnderFileSystem extends BaseUnderFileSystem
     mUserFs = CacheBuilder.newBuilder().build(new CacheLoader<String, FileSystem>() {
       @Override
       public FileSystem load(String userKey) throws Exception {
-        return path.getFileSystem(hdfsConf);
+        FileSystem fs = path.getFileSystem(hdfsConf);
+        fs.setVerifyChecksum(false);
+        return fs;
       }
     });
 

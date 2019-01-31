@@ -33,12 +33,15 @@ import alluxio.grpc.RemoveBlockRequest;
 import alluxio.grpc.RemoveBlockResponse;
 import alluxio.grpc.WriteRequest;
 import alluxio.grpc.WriteResponse;
+import alluxio.network.protocol.databuffer.DataBuffer;
 import alluxio.util.ConfigurationUtils;
+import alluxio.grpc.ZeroCopyUtils;
 import alluxio.util.network.NettyUtils;
 
 import com.google.common.io.Closer;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -88,6 +91,7 @@ public class DefaultBlockWorkerClient implements BlockWorkerClient {
       // Channel is still reused due to client pooling.
       mStreamingChannel = buildChannel(subject, address,
           GrpcManagedChannelPool.PoolingStrategy.DISABLED, alluxioConf);
+      mStreamingChannel.intercept(new StreamSerializationClientInterceptor());
       // Uses default pooling strategy for RPC calls for better scalability.
       mRpcChannel = buildChannel(subject, address,
           GrpcManagedChannelPool.PoolingStrategy.DEFAULT, alluxioConf);
@@ -125,8 +129,12 @@ public class DefaultBlockWorkerClient implements BlockWorkerClient {
   }
 
   @Override
-  public StreamObserver<ReadRequest> readBlock(StreamObserver<ReadResponse> responseObserver) {
-    return mStreamingAsyncStub.readBlock(responseObserver);
+  public StreamObserver<ReadRequest> readBlock(
+      StreamObserver<DataMessage<ReadResponse, DataBuffer>> responseObserver) {
+    ReadResponseDeserializer deserializer = new ReadResponseDeserializer();
+    return mStreamingAsyncStub
+        .withOption(ZeroCopyUtils.RESPONSE_DESERILAIZER, deserializer)
+        .readBlock(new DataMessageStreamObserver(responseObserver, deserializer));
   }
 
   @Override

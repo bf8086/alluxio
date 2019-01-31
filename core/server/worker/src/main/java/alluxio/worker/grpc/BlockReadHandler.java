@@ -12,6 +12,7 @@
 package alluxio.worker.grpc;
 
 import alluxio.AlluxioURI;
+import alluxio.client.block.stream.DataMessage;
 import alluxio.conf.ServerConfiguration;
 import alluxio.Constants;
 import alluxio.conf.PropertyKey;
@@ -71,7 +72,7 @@ public final class BlockReadHandler extends AbstractReadHandler<BlockReadRequest
     /** An object storing the mapping of tier aliases to ordinals. */
     private final StorageTierAssoc mStorageTierAssoc = new WorkerStorageTierAssoc();
 
-    BlockDataReader(BlockReadRequestContext context, StreamObserver<ReadResponse> response,
+    BlockDataReader(BlockReadRequestContext context, StreamObserver<DataMessage<ReadResponse, ByteBuf>> response,
         BlockWorker blockWorker) {
       super(context, response);
       mWorker = blockWorker;
@@ -98,7 +99,7 @@ public final class BlockReadHandler extends AbstractReadHandler<BlockReadRequest
 
     @Override
     protected DataBuffer getDataBuffer(BlockReadRequestContext context,
-        StreamObserver<ReadResponse> response, long offset, int len) throws Exception {
+        StreamObserver<DataMessage<ReadResponse, ByteBuf>> response, long offset, int len) throws Exception {
       openBlock(context, response);
       BlockReader blockReader = context.getBlockReader();
       Preconditions.checkState(blockReader != null);
@@ -119,7 +120,7 @@ public final class BlockReadHandler extends AbstractReadHandler<BlockReadRequest
      * @param response the read response stream
      * @throws Exception if it fails to open the block
      */
-    private void openBlock(BlockReadRequestContext context, StreamObserver<ReadResponse> response)
+    private void openBlock(BlockReadRequestContext context, StreamObserver<DataMessage<ReadResponse, ByteBuf>> response)
         throws Exception {
       if (context.getBlockReader() != null) {
         return;
@@ -206,7 +207,7 @@ public final class BlockReadHandler extends AbstractReadHandler<BlockReadRequest
    * @param responseObserver the response observer of the gRPC stream
    */
   public BlockReadHandler(ExecutorService executorService, BlockWorker blockWorker,
-      StreamObserver<ReadResponse> responseObserver) {
+      StreamObserver<DataMessage<ReadResponse, ByteBuf>> responseObserver) {
     super(executorService, responseObserver);
     mWorker = blockWorker;
   }
@@ -217,7 +218,7 @@ public final class BlockReadHandler extends AbstractReadHandler<BlockReadRequest
 
   @Override
   protected DataReader createDataReader(BlockReadRequestContext context,
-      StreamObserver<ReadResponse> response) {
+      StreamObserver<DataMessage<ReadResponse, ByteBuf>> response) {
     return new BlockDataReader(context, response, mWorker);
   }
 }

@@ -18,6 +18,7 @@ import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.anyLong;
 import static org.mockito.Mockito.when;
 
+import alluxio.grpc.BlockWorkerGrpc;
 import alluxio.grpc.ReadRequest;
 import alluxio.grpc.ReadResponse;
 import alluxio.worker.block.BlockWorker;
@@ -57,10 +58,12 @@ public final class BlockReadHandlerTest extends ReadHandlerTest {
           args.getArgumentAt(0, ReadResponse.class).toByteString()));
       return null;
     }).when(mResponseObserver).onNext(any(ReadResponse.class));
+    DataMessageServerStreamObserver<ReadResponse> observer = new DataMessageServerStreamObserver<>(mResponseObserver,
+        new ReadResponseSerializer(BlockWorkerGrpc.getReadBlockMethod().getResponseMarshaller()));
     mReadHandler = new BlockReadHandler(GrpcExecutors.BLOCK_READER_EXECUTOR, mBlockWorker,
-        mResponseObserver);
-    mReadHandlerNoException = new BlockReadHandler(
-        GrpcExecutors.BLOCK_READER_EXECUTOR, mBlockWorker, mResponseObserver);
+        observer);
+    mReadHandlerNoException = new BlockReadHandler(GrpcExecutors.BLOCK_READER_EXECUTOR, mBlockWorker,
+        observer);
   }
 
   /**
