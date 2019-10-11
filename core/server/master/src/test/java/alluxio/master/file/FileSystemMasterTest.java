@@ -76,6 +76,7 @@ import alluxio.master.file.contexts.ScheduleAsyncPersistenceContext;
 import alluxio.master.file.contexts.SetAclContext;
 import alluxio.master.file.contexts.SetAttributeContext;
 import alluxio.master.file.contexts.WorkerHeartbeatContext;
+import alluxio.master.file.meta.Inode;
 import alluxio.master.file.meta.PersistenceState;
 import alluxio.master.file.meta.TtlIntervalRule;
 import alluxio.master.journal.JournalSystem;
@@ -126,6 +127,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -2651,6 +2653,33 @@ public final class FileSystemMasterTest {
     assertEquals(PersistenceState.PERSISTED.toString(),
         mFileSystemMaster.getFileInfo(parent2,
             GetStatusContext.defaults()).getPersistenceState());
+  }
+
+  @Test
+  public void syncMetdataMarksChildrenLoaded() throws Exception {
+    FileUtils.createDir(Paths.get(mUnderFS, "test").toString());
+    List<FileInfo> statuses = mFileSystemMaster
+        .listStatus(new AlluxioURI("/"), ListStatusContext.defaults());
+    // check the IsChildrenLoaded field is not set
+    assertNotNull(statuses);
+    assertEquals(1, statuses.size());
+    Optional<Inode> inode = mInodeStore.get(statuses.get(0).getFileId());
+    assertTrue(inode.isPresent());
+    assertEquals("test", inode.get().getName());
+    assertTrue(inode.get().isDirectory());
+    assertFalse(inode.get().asDirectory().isDirectChildrenLoaded());
+    // trigger a sync on empty dir
+    FileInfo fileInfo = mFileSystemMaster.getFileInfo(new AlluxioURI("/test"),
+        GetStatusContext.mergeFrom(GetStatusPOptions.newBuilder()
+            .setLoadMetadataType(LoadMetadataPType.ONCE).setCommonOptions(
+                FileSystemMasterCommonPOptions.newBuilder().setSyncIntervalMs(0).build())));
+    // check the IsChildrenLoaded field is set
+    assertEquals(inode.get().getId(), fileInfo.getFileId());
+    assertEquals("test", fileInfo.getName());
+    inode = mInodeStore.get(fileInfo.getFileId());
+    assertTrue(inode.isPresent());
+    assertTrue(inode.get().isDirectory());
+    assertTrue(inode.get().asDirectory().isDirectChildrenLoaded());
   }
 
   private long createFileWithSingleBlock(AlluxioURI uri) throws Exception {

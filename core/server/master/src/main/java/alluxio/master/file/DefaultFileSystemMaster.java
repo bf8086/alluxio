@@ -3553,6 +3553,7 @@ public final class DefaultFileSystemMaster extends CoreMaster implements FileSys
               break;
             }
           }
+          mInodeTree.setDirectChildrenLoaded(rpcContext, inodePath.getInode().asDirectory());
         }
 
         // Iterate over Alluxio children and process persisted children.
