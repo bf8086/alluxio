@@ -28,6 +28,7 @@ import alluxio.grpc.RemoveBlockRequest;
 import alluxio.grpc.RemoveBlockResponse;
 import alluxio.grpc.WriteRequest;
 import alluxio.grpc.WriteResponse;
+import alluxio.security.user.UserState;
 
 import io.grpc.stub.StreamObserver;
 import io.grpc.StatusRuntimeException;
@@ -55,10 +56,10 @@ public interface BlockWorkerClient extends Closeable {
      * @param address the address of the worker
      * @return a new {@link BlockWorkerClient}
      */
-    public static BlockWorkerClient create(@Nullable Subject subject, GrpcServerAddress address,
+    public static BlockWorkerClient create(UserState userState, GrpcServerAddress address,
         AlluxioConfiguration alluxioConf, EventLoopGroup workerGroup)
         throws IOException {
-      return new DefaultBlockWorkerClient(subject, address, alluxioConf, workerGroup);
+      return new DefaultBlockWorkerClient(userState, address, alluxioConf, workerGroup);
     }
   }
 
