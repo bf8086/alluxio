@@ -40,7 +40,7 @@ public class LFUCacheEvictor implements CacheEvictor {
   private final Map<Integer, Set<PageId>> mBucketMap =
       new HashMap<>(BUCKET_MAP_INIT_CAPACITY, BUCKET_MAP_INIT_LOAD_FACTOR);
   private int mMinBucket = -1;
-  private final double mLogBase;
+  private final double mDivisor;
 
   /**
    * Required constructor.
@@ -48,11 +48,11 @@ public class LFUCacheEvictor implements CacheEvictor {
    * @param conf Alluxio configuration
    */
   public LFUCacheEvictor(AlluxioConfiguration conf) {
-    mLogBase = conf.getDouble(PropertyKey.USER_CLIENT_CACHE_EVICTOR_LFU_LOGBASE);
+    mDivisor = Math.log(conf.getDouble(PropertyKey.USER_CLIENT_CACHE_EVICTOR_LFU_LOGBASE));
   }
 
   private int getBucket(int count) {
-    return (int) (Math.log(count) / Math.log(mLogBase));
+    return (int) (Math.log(count) / mDivisor);
   }
 
   private void addPageToBucket(PageId pageId, int bucket) {
@@ -70,6 +70,15 @@ public class LFUCacheEvictor implements CacheEvictor {
     });
   }
 
+  private Set<PageId> touchPageInBucket(PageId pageId, int bucket) {
+    // re-add the page in the bucket so it shows up at the end of the eviction queue
+    return mBucketMap.computeIfPresent(bucket, (bucketKey, pageSet) -> {
+      pageSet.remove(pageId);
+      pageSet.add(pageId);
+      return pageSet;
+    });
+  }
+
   @Override
   // TODO(feng): explore more efficient locking scheme
   public synchronized void updateOnGet(PageId pageId) {
@@ -83,6 +92,8 @@ public class LFUCacheEvictor implements CacheEvictor {
           mMinBucket = newBucket;
         }
         addPageToBucket(pageId, newBucket);
+      } else {
+        touchPageInBucket(pageId, newBucket);
       }
     } else {
       mMinBucket = newBucket;
@@ -97,7 +108,7 @@ public class LFUCacheEvictor implements CacheEvictor {
 
   @Override
   public synchronized void updateOnDelete(PageId pageId) {
-    Integer count = mPageMap.get(pageId);
+    Integer count = mPageMap.remove(pageId);
     if (count == null) {
       return;
     }

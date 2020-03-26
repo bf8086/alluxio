@@ -72,6 +72,30 @@ public final class LFUCacheEvictorTest {
   }
 
   @Test
+  public void evictGetRecentOrder() {
+    mEvictor.updateOnGet(mOne);
+    mEvictor.updateOnGet(mTwo);
+    Assert.assertEquals(mOne, mEvictor.evict());
+    mEvictor.updateOnDelete(mOne);
+    Assert.assertEquals(mTwo, mEvictor.evict());
+  }
+
+  @Test
+  public void evictUpdatedGetRecentOrder() {
+    mEvictor.updateOnGet(mOne);
+    mEvictor.updateOnGet(mTwo);
+    mEvictor.updateOnGet(mTwo);
+    mEvictor.updateOnGet(mThree);
+    mEvictor.updateOnGet(mThree);
+    mEvictor.updateOnGet(mOne);
+    Assert.assertEquals(mTwo, mEvictor.evict());
+    mEvictor.updateOnDelete(mTwo);
+    Assert.assertEquals(mThree, mEvictor.evict());
+    mEvictor.updateOnDelete(mThree);
+    Assert.assertEquals(mOne, mEvictor.evict());
+  }
+
+  @Test
   public void evictDeleteSkippedBucket() {
     mEvictor.updateOnGet(mOne);
     mEvictor.updateOnGet(mFour);
@@ -82,6 +106,16 @@ public final class LFUCacheEvictorTest {
     mEvictor.updateOnDelete(mOne);
     Assert.assertEquals(mFour, mEvictor.evict());
     mEvictor.updateOnDelete(mFour);
+  }
+
+  @Test
+  public void evictDeleteTwice() {
+    mEvictor.updateOnGet(mOne);
+    mEvictor.updateOnGet(mOne);
+    Assert.assertEquals(mOne, mEvictor.evict());
+    mEvictor.updateOnDelete(mOne);
+    mEvictor.updateOnGet(mOne);
+    Assert.assertEquals(mOne, mEvictor.evict());
   }
 
   @Test
