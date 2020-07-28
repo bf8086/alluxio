@@ -119,7 +119,7 @@ public final class Constants {
   public static final int DEFAULT_REGISTRY_GET_TIMEOUT_MS = 60 * SECOND_MS;
 
   // Test-related constants
-  public static final int MAX_TEST_DURATION_MS = 10 * MINUTE_MS;
+  public static final int MAX_TEST_DURATION_MS = 100 * MINUTE_MS;
   public static final String TEST_ARTIFACTS_DIR = "./target/artifacts";
   public static final String TEST_LOG_DIR = "./target/logs";
   public static final String TESTS_LOG = "./target/logs/tests.log";

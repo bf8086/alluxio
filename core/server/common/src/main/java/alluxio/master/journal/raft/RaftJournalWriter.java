@@ -19,6 +19,10 @@ import alluxio.proto.journal.Journal.JournalEntry;
 
 import com.google.common.base.Preconditions;
 import io.atomix.copycat.client.CopycatClient;
+import org.apache.ratis.client.RaftClient;
+import org.apache.ratis.protocol.Message;
+import org.apache.ratis.protocol.RaftClientReply;
+import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,7 +48,7 @@ public class RaftJournalWriter implements JournalWriter {
   private final AtomicLong mLastSubmittedSequenceNumber;
   private final AtomicLong mLastCommittedSequenceNumber;
 
-  private final CopycatClient mClient;
+  private final RaftClient mClient;
 
   private volatile boolean mClosed;
   private JournalEntry.Builder mJournalEntryBuilder;
@@ -54,7 +58,7 @@ public class RaftJournalWriter implements JournalWriter {
    * @param client client for writing entries to the journal; the constructed journal writer owns
    *               this client and is responsible for closing it
    */
-  public RaftJournalWriter(long nextSequenceNumberToWrite, CopycatClient client) {
+  public RaftJournalWriter(long nextSequenceNumberToWrite, RaftClient client) {
     mNextSequenceNumberToWrite = new AtomicLong(nextSequenceNumberToWrite);
     mLastSubmittedSequenceNumber = new AtomicLong(-1);
     mLastCommittedSequenceNumber = new AtomicLong(-1);
@@ -90,18 +94,23 @@ public class RaftJournalWriter implements JournalWriter {
         // number when applying them. This could happen if submit fails and we re-submit the same
         // entry on retry.
         mLastSubmittedSequenceNumber.set(flushSN);
-        mClient.submit(new JournalEntryCommand(mJournalEntryBuilder.build())).get(mWriteTimeoutMs,
-            TimeUnit.MILLISECONDS);
+        RaftClientReply reply = mClient.send(RaftJournalSystem.toRaftMessage(mJournalEntryBuilder.build()));
         mLastCommittedSequenceNumber.set(flushSN);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        throw new IOException(e);
-      } catch (ExecutionException e) {
-        throw new IOException(e.getCause());
-      } catch (TimeoutException e) {
-        throw new IOException(String.format(
-            "Timed out after waiting %s milliseconds for journal entries to be processed",
-            mWriteTimeoutMs), e);
+        if (reply.getException() != null) {
+          throw reply.getException();
+        }
+//      } catch (InterruptedException e) {
+//        Thread.currentThread().interrupt();
+//        throw new IOException(e);
+//      } catch (ExecutionException e) {
+//        throw new IOException(e.getCause());
+//      } catch (TimeoutException e) {
+//        throw new IOException(String.format(
+//            "Timed out after waiting %s milliseconds for journal entries to be processed",
+//            mWriteTimeoutMs), e);
+      } catch (Exception e) {
+        LOG.warn("Exception occured writing journal entry {}", mJournalEntryBuilder, e);
+        throw e;
       }
       mJournalEntryBuilder = null;
     }
@@ -128,15 +137,16 @@ public class RaftJournalWriter implements JournalWriter {
 
   private void closeClient() {
     try {
-      mClient.close().get(ServerConfiguration
-          .getMs(PropertyKey.MASTER_EMBEDDED_JOURNAL_SHUTDOWN_TIMEOUT), TimeUnit.MILLISECONDS);
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new RuntimeException(e);
-    } catch (ExecutionException e) {
+      mClient.close();
+//          .get(ServerConfiguration
+//          .getMs(PropertyKey.MASTER_EMBEDDED_JOURNAL_SHUTDOWN_TIMEOUT), TimeUnit.MILLISECONDS);
+//    } catch (InterruptedException e) {
+//      Thread.currentThread().interrupt();
+//      throw new RuntimeException(e);
+    } catch (IOException e) {
       LOG.warn("Failed to close raft client: {}", e.toString());
-    } catch (TimeoutException e) {
-      LOG.warn("Timed out while closing raft client.");
+//    } catch (TimeoutException e) {
+//      LOG.warn("Timed out while closing raft client.");
     }
   }
 }

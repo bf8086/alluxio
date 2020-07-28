@@ -49,7 +49,7 @@ public class JournalIntegrationTest {
   @Rule
   public LocalAlluxioClusterResource mClusterResource =
       new LocalAlluxioClusterResource.Builder()
-          .setProperty(PropertyKey.MASTER_JOURNAL_TYPE, JournalType.UFS.toString())
+          .setProperty(PropertyKey.MASTER_JOURNAL_TYPE, JournalType.EMBEDDED.toString())
           .setProperty(PropertyKey.MASTER_JOURNAL_TAILER_SHUTDOWN_QUIET_WAIT_TIME_MS, 0)
           .setProperty(PropertyKey.USER_FILE_WRITE_TYPE_DEFAULT, WriteType.MUST_CACHE)
           .setNumWorkers(0)
@@ -65,10 +65,17 @@ public class JournalIntegrationTest {
 
   @Test
   public void recoverAfterSingleRestart() throws Exception {
-    AlluxioURI testFile = new AlluxioURI("/testFile");
-    mCluster.getClient().createFile(testFile).close();
-    mCluster.restartMasters();
-    assertTrue(mCluster.getClient().exists(testFile));
+    try {
+      AlluxioURI testFile = new AlluxioURI("/testFile");
+      mCluster.getClient().createFile(testFile).close();
+      Thread.sleep(1000);
+      mCluster.restartMasters();
+      Thread.sleep(3000);
+      assertTrue(mCluster.getClient().exists(testFile));
+    } catch (Exception e){
+      System.out.println("test error " + e.getMessage());
+    }
+
   }
 
   @Test

@@ -14,8 +14,12 @@ package alluxio.master.journal.raft;
 import alluxio.master.AbstractPrimarySelector;
 
 import com.google.common.base.Preconditions;
+import com.google.common.base.Supplier;
 import io.atomix.catalyst.concurrent.Listener;
 import io.atomix.copycat.server.CopycatServer;
+import org.apache.ratis.proto.RaftProtos;
+import org.apache.ratis.server.RaftServer;
+import org.apache.ratis.util.LifeCycle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,31 +35,18 @@ import javax.annotation.concurrent.ThreadSafe;
 public class RaftPrimarySelector extends AbstractPrimarySelector {
   private static final Logger LOG = LoggerFactory.getLogger(RaftPrimarySelector.class);
 
-  private CopycatServer mServer;
+  private RaftServer mServer;
   private Listener<CopycatServer.State> mStateListener;
 
   /**
    * @param server reference to the server backing this selector
    */
-  public void init(CopycatServer server) {
+  public void init(RaftServer server) {
     mServer = Preconditions.checkNotNull(server, "server");
-    if (mStateListener != null) {
-      mStateListener.close();
-    }
-    // We must register the callback before initializing mState in case the state changes
-    // immediately after initializing mState.
-    mStateListener = server.onStateChange(state -> {
-      setState(serverState());
-    });
-    setState(serverState());
   }
 
-  private State serverState() {
-    if (mServer.state() == CopycatServer.State.LEADER) {
-      return State.PRIMARY;
-    } else {
-      return State.SECONDARY;
-    }
+  public void setServerState(State state) {
+    setState(state);
   }
 
   @Override

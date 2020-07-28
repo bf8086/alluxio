@@ -23,6 +23,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.annotation.concurrent.ThreadSafe;
 
@@ -34,6 +35,7 @@ public final class ExternalProcess {
   private final Map<PropertyKey, String> mConf;
   private final Class<?> mClazz;
   private final File mOutFile;
+  private static AtomicInteger port = new AtomicInteger(16606);
 
   private Process mProcess;
 
@@ -59,6 +61,7 @@ public final class ExternalProcess {
     for (Entry<PropertyKey, String> entry : mConf.entrySet()) {
       args.add(String.format("-D%s=%s", entry.getKey().toString(), entry.getValue()));
     }
+    args.add("-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=" + port.incrementAndGet());
     args.add(mClazz.getCanonicalName());
     ProcessBuilder pb = new ProcessBuilder(args);
     pb.redirectError(mOutFile);

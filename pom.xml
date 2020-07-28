@@ -140,7 +140,7 @@
     <junit.version>4.13</junit.version>
     <log4j.version>1.2.17</log4j.version>
     <maven.version>3.3.9</maven.version>
-    <metrics.version>3.1.2</metrics.version>
+    <metrics.version>3.2.1</metrics.version>
     <orc.version>1.6.2</orc.version>
     <oshi.version>4.2.0</oshi.version>
     <powermock.version>1.6.2</powermock.version>
@@ -552,6 +552,16 @@
         <groupId>io.atomix.copycat.alluxio</groupId>
         <artifactId>copycat-client</artifactId>
         <version>${copycat.version}</version>
+      </dependency>
+      <dependency>
+        <artifactId>ratis-server</artifactId>
+        <groupId>org.apache.ratis</groupId>
+        <version>1.0.0</version>
+      </dependency>
+      <dependency>
+        <artifactId>ratis-grpc</artifactId>
+        <groupId>org.apache.ratis</groupId>
+        <version>1.0.0</version>
       </dependency>
       <dependency>
         <groupId>org.apache.mesos</groupId>
