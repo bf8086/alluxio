@@ -82,6 +82,73 @@ public class RaftJournalTest {
   }
 
   @Test
+  public void snapshotTest() throws Exception {
+    // Create a counting master implementation that counts how many journal entries it processed.
+    CountingDummyFileSystemMaster countingMaster = new CountingDummyFileSystemMaster();
+    mFollowerJournalSystem.createJournal(countingMaster);
+
+//    // Suspend follower journal system.
+//    mFollowerJournalSystem.suspend();
+//    try {
+//      mFollowerJournalSystem.suspend();
+//      Assert.fail("Suspend succeeded for already suspended journal.");
+//    } catch (Exception e) {
+//      // Expected to fail when suspending a suspended journal.
+//    }
+
+    // Catch up follower journal system to target-index:5.
+//    final long catchupIndex = 5;
+//    Map<String, Long> backupSequences = new HashMap<>();
+//    backupSequences.put("FileSystemMaster", catchupIndex);
+//    CatchupFuture catchupFuture = mFollowerJournalSystem.catchup(backupSequences);
+
+    // Create entries on the leader journal context.
+    // These will be replicated to follower journal context.
+    final int batchCount = 10000;
+    final int entryCount = 100;
+    for (int j = 0; j < batchCount; j++) {
+      try (JournalContext journalContext =
+               mLeaderJournalSystem.createJournal(new NoopMaster()).createJournalContext()) {
+        for (int i = 0; i < entryCount; i++) {
+          journalContext.append(
+              alluxio.proto.journal.Journal.JournalEntry.newBuilder().setInodeLastModificationTime(
+                  File.InodeLastModificationTimeEntry.newBuilder().setId(i).build()).build());
+        }
+      }
+    }
+    CommonUtils.waitFor("full state acquired", () -> {
+          System.out.println("Applied entries: " + countingMaster.getApplyCount());
+          return countingMaster.getApplyCount() == batchCount * entryCount;
+        },
+        mWaitOptions);
+
+    // Wait for sequences to be caught up.
+//    catchupFuture.waitTermination();
+//    Assert.assertEquals(catchupIndex + 1, countingMaster.getApplyCount());
+//    // Wait for 2 heart-beat period and verify follower master state hasn't changed.
+//    Thread.sleep(
+//        2 * ServerConfiguration.getMs(PropertyKey.MASTER_EMBEDDED_JOURNAL_HEARTBEAT_INTERVAL));
+//    Assert.assertEquals(catchupIndex + 1, countingMaster.getApplyCount());
+//    // Exit backup mode and wait until follower master acquires the current knowledge.
+//    mFollowerJournalSystem.resume();
+//    CommonUtils.waitFor("full state acquired", () -> countingMaster.getApplyCount() == entryCount,
+//        mWaitOptions);
+
+    // Write more entries and validate they are replicated to follower.
+//    try (JournalContext journalContext =
+//        mLeaderJournalSystem.createJournal(new NoopMaster()).createJournalContext()) {
+//      journalContext
+//          .append(alluxio.proto.journal.Journal.JournalEntry.newBuilder()
+//              .setInodeLastModificationTime(
+//                  File.InodeLastModificationTimeEntry.newBuilder().setId(entryCount).build())
+//              .build());
+//    }
+//    CommonUtils.waitFor("full state acquired after resume",
+//        () -> countingMaster.getApplyCount() == entryCount + 1, mWaitOptions);
+  }
+
+
+  @Test
   public void suspendCatchupResume() throws Exception {
     // Create a counting master implementation that counts how many journal entries it processed.
     CountingDummyFileSystemMaster countingMaster = new CountingDummyFileSystemMaster();
@@ -350,6 +417,7 @@ public class RaftJournalTest {
     // Override defaults for faster quorum formation.
     ServerConfiguration.set(PropertyKey.MASTER_EMBEDDED_JOURNAL_ELECTION_TIMEOUT, 550);
     ServerConfiguration.set(PropertyKey.MASTER_EMBEDDED_JOURNAL_HEARTBEAT_INTERVAL, 250);
+    ServerConfiguration.set(PropertyKey.MASTER_JOURNAL_LOG_SIZE_BYTES_MAX, 300);
 
     List<InetSocketAddress> clusterAddresses = new ArrayList<>(journalSystemCount);
     List<Integer> freePorts = getFreePorts(journalSystemCount);

@@ -474,7 +474,14 @@ public class JournalStateMachine extends BaseStateMachine {
             public void onNext(MasterCheckpointPResponse value) {
               if (mRequestStream == null) {
                 LOG.error("No request stream assigned");
+                mSendingSnapshot.set(false);
                 throw new IllegalStateException("No request stream assigned");
+              }
+              if (mClosed || mJournalSystem.isLeader()) {
+                LOG.info("cancel sending snapshot due to state change");
+                mRequestStream.onError(new IllegalStateException("cancel sending snapshot due to state change"));
+                mSendingSnapshot.set(false);
+                return;
               }
               switch (value.getCommand()) {
                 case CheckpointCommand_Done:
@@ -494,6 +501,7 @@ public class JournalStateMachine extends BaseStateMachine {
                             .setChunk(ByteString.readFrom(is, SNAPSHOT_CHUNK_SIZE))
                             .setSnapshotTerm(snapshot.getTerm())
                             .setSnapshotIndex(snapshot.getIndex()))
+                        .setMasterId(this.hashCode())
                         .build());
                     mOffset += SNAPSHOT_CHUNK_SIZE;
                   } catch (FileNotFoundException e) {
@@ -518,6 +526,7 @@ public class JournalStateMachine extends BaseStateMachine {
 
             @Override
             public void onError(Throwable t) {
+              LOG.error("Error sending snapshot {} at {}", mSnapshotFile, mOffset, t);
               mSendingSnapshot.set(false);
             }
 
@@ -534,6 +543,7 @@ public class JournalStateMachine extends BaseStateMachine {
           };
       StreamObserver<MasterCheckpointPRequest> requestObserver = metaClient.masterCheckpoint(responseObserver);
       requestObserver.onNext(MasterCheckpointPRequest.newBuilder()
+          .setMasterId(this.hashCode())
           .setOptions(MasterCheckpointPOptions.newBuilder()
               .setOffset(0)
               .setSnapshotTerm(snapshot.getTerm())
@@ -714,6 +724,11 @@ public class JournalStateMachine extends BaseStateMachine {
       }
 
       public void onNextInternal(MasterCheckpointPRequest request) throws IOException {
+        if (mClosed || !mJournalSystem.isLeader()) {
+          LOG.info("cancel snapshot upload request {} due to shutdown", request);
+          responseStreamObserver.onCompleted();
+          cleanup();
+        }
         TermIndex termIndex = TermIndex.newTermIndex(
             request.getOptions().getSnapshotTerm(), request.getOptions().getSnapshotIndex());
         if (currentSnapshot != null && currentSnapshot.getTermIndex().compareTo(termIndex) >= 0) {

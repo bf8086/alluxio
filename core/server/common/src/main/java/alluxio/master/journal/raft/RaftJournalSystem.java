@@ -329,7 +329,8 @@ public final class RaftJournalSystem extends AbstractJournalSystem {
     // snapshot interval
     RaftServerConfigKeys.Snapshot.setAutoTriggerEnabled(
         properties, true);
-    long snapshotAutoTriggerThreshold = mConf.getMaxLogSize() * 16;
+    long snapshotAutoTriggerThreshold =
+        ServerConfiguration.global().getLong(PropertyKey.MASTER_JOURNAL_CHECKPOINT_PERIOD_ENTRIES);
     RaftServerConfigKeys.Snapshot.setAutoTriggerThreshold(properties,
         snapshotAutoTriggerThreshold);
 
