@@ -17,6 +17,9 @@ import alluxio.conf.ServerConfiguration;
 import alluxio.exception.ExceptionMessage;
 import alluxio.exception.status.CancelledException;
 import alluxio.exception.status.DeadlineExceededException;
+import alluxio.grpc.MasterCheckpointPRequest;
+import alluxio.grpc.MasterCheckpointPResponse;
+import alluxio.grpc.MetaMasterMasterServiceGrpc;
 import alluxio.grpc.NetAddress;
 import alluxio.grpc.QuorumServerInfo;
 import alluxio.grpc.QuorumServerState;
@@ -26,9 +29,7 @@ import alluxio.master.journal.AbstractJournalSystem;
 import alluxio.master.journal.AsyncJournalWriter;
 import alluxio.master.journal.CatchupFuture;
 import alluxio.master.journal.Journal;
-import alluxio.master.transport.GrpcMessagingTransport;
 import alluxio.proto.journal.Journal.JournalEntry;
-import alluxio.security.user.ServerUserState;
 import alluxio.util.CommonUtils;
 import alluxio.util.WaitForOptions;
 import alluxio.util.io.FileUtils;
@@ -40,13 +41,8 @@ import com.google.common.base.Suppliers;
 import com.google.common.net.HostAndPort;
 import io.atomix.catalyst.serializer.Serializer;
 import io.atomix.catalyst.transport.Address;
-import io.atomix.copycat.client.CopycatClient;
-import io.atomix.copycat.client.RecoveryStrategies;
-import io.atomix.copycat.client.ServerSelectionStrategies;
-import io.atomix.copycat.server.CopycatServer;
 import io.atomix.copycat.server.StateMachine;
-import io.atomix.copycat.server.cluster.Member;
-import io.atomix.copycat.server.state.ServerMember;
+import io.grpc.stub.StreamObserver;
 import org.apache.ratis.RaftConfigKeys;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.RaftClientConfigKeys;
@@ -68,6 +64,7 @@ import org.apache.ratis.retry.RetryPolicy;
 import org.apache.ratis.rpc.SupportedRpcType;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
+import org.apache.ratis.statemachine.SnapshotInfo;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.apache.ratis.util.LifeCycle;
 import org.apache.ratis.util.SizeInBytes;
@@ -78,8 +75,6 @@ import org.slf4j.LoggerFactory;
 import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.time.Duration;
-import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -320,7 +315,7 @@ public final class RaftJournalSystem extends AbstractJournalSystem {
         SizeInBytes.valueOf(mConf.getMaxLogSize()));
 
 
-    // election timeout
+    // election timeout, heartbeat timeout is automatically 1/2 of the value
     final TimeDuration leaderElectionMinTimeout = TimeDuration.valueOf(
         mConf.getElectionTimeoutMs(), TimeUnit.MILLISECONDS);
     RaftServerConfigKeys.Rpc.setTimeoutMin(properties,
@@ -345,16 +340,10 @@ public final class RaftJournalSystem extends AbstractJournalSystem {
 
     // request timeout
     RaftServerConfigKeys.Rpc.setRequestTimeout(properties,
-        TimeDuration.valueOf(leaderElectionMaxTimeout, TimeUnit.MILLISECONDS));
+        TimeDuration.valueOf(leaderElectionMaxTimeout / 2, TimeUnit.MILLISECONDS));
 
     RaftServerConfigKeys.RetryCache.setExpiryTime(properties,
-        TimeDuration.valueOf(leaderElectionMaxTimeout * 10, TimeUnit.MILLISECONDS));
-
-    // server timeout
-    RaftServerConfigKeys.Rpc.setTimeoutMin(properties,
-        TimeDuration.valueOf(leaderElectionMaxTimeout * 2, TimeUnit.MILLISECONDS));
-    RaftServerConfigKeys.Rpc.setTimeoutMax(properties,
-        TimeDuration.valueOf(leaderElectionMaxTimeout * 2 + 1000, TimeUnit.MILLISECONDS));
+        TimeDuration.valueOf(leaderElectionMaxTimeout / 2, TimeUnit.MILLISECONDS));
 
     // build server
     mServer = RaftServer.newBuilder()
@@ -362,12 +351,6 @@ public final class RaftJournalSystem extends AbstractJournalSystem {
         .setGroup(mRaftGroup)
         .setStateMachine(mStateMachine)
         .setProperties(properties)
-//        .withStorage(storage)
-//        .withHeartbeatInterval(Duration.ofMillis(mConf.getHeartbeatIntervalMs()))
-//        .withSerializer(createSerializer())
-//        .withTransport(new GrpcMessagingTransport(
-//            ServerConfiguration.global(), ServerUserState.global(), RAFTSERVER_CLIENT_TYPE)
-//                .withServerProxy(serverProxy))
         // Copycat wants a supplier that will generate *new* state machines. We can't handle
         // generating a new state machine here, so we will throw an exception if copycat tries to
         // call the supplier more than once.
@@ -584,6 +567,16 @@ public final class RaftJournalSystem extends AbstractJournalSystem {
     }
   }
 
+  @Override
+  public SnapshotInfo getLatestCheckpoint(MetaMasterMasterServiceGrpc.MetaMasterMasterServiceStub metaClient) throws IOException {
+    return mStateMachine.maybeSendSnapshotToPrimaryMaster(metaClient);
+  }
+
+  @Override
+  public StreamObserver<MasterCheckpointPRequest> receiveCheckpointFromFollower(StreamObserver<MasterCheckpointPResponse> metaClient) {
+    return mStateMachine.receiveSnapshotFromFollower(metaClient);
+  }
+
   /**
    * Waits for snapshotting to start.
    *
@@ -776,7 +769,8 @@ public final class RaftJournalSystem extends AbstractJournalSystem {
   public synchronized boolean isLeader() {
     return mServer != null
         && mServer.getLifeCycleState() == LifeCycle.State.RUNNING
-        && mRoleSupplier.get() == RaftProtos.RaftPeerRole.LEADER;
+        && mPrimarySelector.getState() == PrimarySelector.State.PRIMARY;
+//        && mRoleSupplier.get() == RaftProtos.RaftPeerRole.LEADER;
   }
 
   /**

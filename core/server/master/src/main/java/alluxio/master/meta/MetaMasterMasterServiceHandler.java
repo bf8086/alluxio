@@ -14,6 +14,8 @@ package alluxio.master.meta;
 import alluxio.RpcUtils;
 import alluxio.grpc.GetMasterIdPRequest;
 import alluxio.grpc.GetMasterIdPResponse;
+import alluxio.grpc.MasterCheckpointPRequest;
+import alluxio.grpc.MasterCheckpointPResponse;
 import alluxio.grpc.MasterHeartbeatPRequest;
 import alluxio.grpc.MasterHeartbeatPResponse;
 import alluxio.grpc.MetaMasterMasterServiceGrpc;
@@ -75,5 +77,10 @@ public final class MetaMasterMasterServiceHandler
           return MasterHeartbeatPResponse.newBuilder()
               .setCommand(mMetaMaster.masterHeartbeat(request.getMasterId())).build();
         }, "masterHeartbeat", "request=%s", responseObserver, request);
+  }
+
+  @Override
+  public StreamObserver<MasterCheckpointPRequest> masterCheckpoint(StreamObserver<MasterCheckpointPResponse> responseObserver) {
+    return mMetaMaster.uploadCheckPoint(responseObserver);
   }
 }

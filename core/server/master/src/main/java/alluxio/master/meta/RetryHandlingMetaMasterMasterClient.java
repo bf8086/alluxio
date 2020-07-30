@@ -41,6 +41,7 @@ public final class RetryHandlingMetaMasterMasterClient extends AbstractMasterCli
   private static final Logger LOG =
       LoggerFactory.getLogger(RetryHandlingMetaMasterMasterClient.class);
   private MetaMasterMasterServiceGrpc.MetaMasterMasterServiceBlockingStub mClient = null;
+  private MetaMasterMasterServiceGrpc.MetaMasterMasterServiceStub mAsyncClient = null;
 
   /**
    * Creates a instance of {@link RetryHandlingMetaMasterMasterClient}.
@@ -69,6 +70,7 @@ public final class RetryHandlingMetaMasterMasterClient extends AbstractMasterCli
   @Override
   protected void afterConnect() throws IOException {
     mClient = MetaMasterMasterServiceGrpc.newBlockingStub(mChannel);
+    mAsyncClient = MetaMasterMasterServiceGrpc.newStub(mChannel);
   }
 
   /**
@@ -94,6 +96,10 @@ public final class RetryHandlingMetaMasterMasterClient extends AbstractMasterCli
     return retryRPC(() -> mClient
         .masterHeartbeat(MasterHeartbeatPRequest.newBuilder().setMasterId(masterId).build())
         .getCommand(), LOG, "Heartbeat", "masterId=%d", masterId);
+  }
+
+  public MetaMasterMasterServiceGrpc.MetaMasterMasterServiceStub getClient() {
+    return mAsyncClient;
   }
 
   /**

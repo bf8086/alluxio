@@ -13,6 +13,9 @@ package alluxio.master.journal;
 
 import alluxio.conf.PropertyKey;
 import alluxio.conf.ServerConfiguration;
+import alluxio.grpc.MasterCheckpointPRequest;
+import alluxio.grpc.MasterCheckpointPResponse;
+import alluxio.grpc.MetaMasterMasterServiceGrpc;
 import alluxio.master.Master;
 import alluxio.master.journal.noop.NoopJournalSystem;
 import alluxio.master.journal.raft.RaftJournalConfiguration;
@@ -22,6 +25,9 @@ import alluxio.master.journal.ufs.UfsJournalSystem;
 import alluxio.proto.journal.Journal.JournalEntry;
 import alluxio.util.CommonUtils;
 import alluxio.util.network.NetworkAddressUtils.ServiceType;
+
+import io.grpc.stub.StreamObserver;
+import org.apache.ratis.statemachine.SnapshotInfo;
 
 import java.io.File;
 import java.io.IOException;
@@ -213,6 +219,29 @@ public interface JournalSystem {
    */
   void checkpoint() throws IOException;
 
+
+  default SnapshotInfo getLatestCheckpoint(MetaMasterMasterServiceGrpc.MetaMasterMasterServiceStub metaClient) throws IOException {
+    return null;
+  }
+
+  default StreamObserver<MasterCheckpointPRequest> receiveCheckpointFromFollower(StreamObserver<MasterCheckpointPResponse> metaClient) {
+    metaClient.onCompleted();
+    return new StreamObserver<MasterCheckpointPRequest>() {
+      @Override
+      public void onNext(MasterCheckpointPRequest value) {
+      }
+
+      @Override
+      public void onError(Throwable t) {
+
+      }
+
+      @Override
+      public void onCompleted() {
+
+      }
+    };
+  }
   /**
    * Builder for constructing a journal system.
    */

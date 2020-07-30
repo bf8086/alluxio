@@ -15,6 +15,8 @@ import alluxio.conf.PropertyKey;
 import alluxio.exception.status.NotFoundException;
 import alluxio.exception.status.UnavailableException;
 import alluxio.grpc.GetConfigurationPOptions;
+import alluxio.grpc.MasterCheckpointPRequest;
+import alluxio.grpc.MasterCheckpointPResponse;
 import alluxio.grpc.MetaCommand;
 import alluxio.grpc.RegisterMasterPOptions;
 import alluxio.master.Master;
@@ -23,6 +25,8 @@ import alluxio.wire.Address;
 import alluxio.wire.ConfigCheckReport;
 import alluxio.wire.ConfigHash;
 import alluxio.wire.Configuration;
+
+import io.grpc.stub.StreamObserver;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -158,4 +162,6 @@ public interface MetaMaster extends BackupOps, Master {
    * @return the hostname of the master that did the checkpoint
    */
   String checkpoint() throws IOException;
+
+  StreamObserver<MasterCheckpointPRequest> uploadCheckPoint(StreamObserver<MasterCheckpointPResponse> responseObserver);
 }

@@ -29,6 +29,8 @@ import alluxio.grpc.BackupPRequest;
 import alluxio.grpc.BackupStatusPRequest;
 import alluxio.grpc.GetConfigurationPOptions;
 import alluxio.grpc.GrpcService;
+import alluxio.grpc.MasterCheckpointPRequest;
+import alluxio.grpc.MasterCheckpointPResponse;
 import alluxio.grpc.MetaCommand;
 import alluxio.grpc.RegisterMasterPOptions;
 import alluxio.grpc.Scope;
@@ -65,6 +67,7 @@ import alluxio.wire.ConfigHash;
 import alluxio.wire.Configuration;
 
 import com.google.common.collect.ImmutableSet;
+import io.grpc.stub.StreamObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -330,7 +333,7 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
             new RetryHandlingMetaMasterMasterClient(MasterClientContext
                 .newBuilder(ClientContext.create(ServerConfiguration.global())).build());
         getExecutorService().submit(new HeartbeatThread(HeartbeatContext.META_MASTER_SYNC,
-            new MetaMasterSync(mMasterAddress, metaMasterClient),
+            new MetaMasterSync(mMasterAddress, metaMasterClient, mJournalSystem),
             (int) ServerConfiguration.getMs(PropertyKey.MASTER_STANDBY_HEARTBEAT_INTERVAL),
             ServerConfiguration.global(), mMasterContext.getUserState()));
         LOG.info("Standby master with address {} starts sending heartbeat to leader master.",
@@ -377,6 +380,11 @@ public final class DefaultMetaMaster extends CoreMaster implements MetaMaster {
     } catch (Exception e) {
       throw new IOException("Failed to take a checkpoint.", e);
     }
+  }
+
+  @Override
+  public StreamObserver<MasterCheckpointPRequest> uploadCheckPoint(StreamObserver<MasterCheckpointPResponse> responseObserver) {
+    return mJournalSystem.receiveCheckpointFromFollower(responseObserver);
   }
 
   @Override

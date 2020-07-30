@@ -15,9 +15,11 @@ import alluxio.conf.ServerConfiguration;
 import alluxio.grpc.MetaCommand;
 import alluxio.grpc.Scope;
 import alluxio.heartbeat.HeartbeatExecutor;
+import alluxio.master.journal.JournalSystem;
 import alluxio.util.ConfigurationUtils;
 import alluxio.wire.Address;
 
+import org.apache.ratis.statemachine.SnapshotInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -48,16 +50,18 @@ public final class MetaMasterSync implements HeartbeatExecutor {
 
   /** The ID of this standby master. */
   private final AtomicReference<Long> mMasterId = new AtomicReference<>(UNINITIALIZED_MASTER_ID);
+  private final JournalSystem mJournalSystem;
 
   /**
    * Creates a new instance of {@link MetaMasterSync}.
-   *
-   * @param masterAddress the master address
+   *  @param masterAddress the master address
    * @param masterClient the meta master client
+   * @param mJournalSystem
    */
-  public MetaMasterSync(Address masterAddress, RetryHandlingMetaMasterMasterClient masterClient) {
+  public MetaMasterSync(Address masterAddress, RetryHandlingMetaMasterMasterClient masterClient, JournalSystem journalSystem) {
     mMasterAddress = masterAddress;
     mMasterClient = masterClient;
+    mJournalSystem = journalSystem;
   }
 
   /**
@@ -72,6 +76,7 @@ public final class MetaMasterSync implements HeartbeatExecutor {
       }
       command = mMasterClient.heartbeat(mMasterId.get());
       handleCommand(command);
+      mJournalSystem.getLatestCheckpoint(mMasterClient.getClient());
     } catch (IOException e) {
       // An error occurred, log and ignore it or error if heartbeat timeout is reached
       if (command == null) {

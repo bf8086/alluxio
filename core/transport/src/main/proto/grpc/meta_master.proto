@@ -244,6 +244,28 @@ message MasterHeartbeatPResponse {
   optional MetaCommand command = 1;
 }
 
+message MasterCheckpointPOptions {
+  optional int64 snapshotTerm = 1;
+  optional int64 snapshotIndex = 2;
+  optional bytes chunk = 3;
+  optional int64 offset = 4;
+  optional bool eof = 5;
+}
+
+enum CheckpointCommand {
+    CheckpointCommand_Unknown = 0;
+    CheckpointCommand_Done = 1;
+    CheckpointCommand_Send = 2;
+    CheckpointCommand_Pause = 3;
+}
+message MasterCheckpointPRequest {
+    optional int64 masterId = 1;
+    optional MasterCheckpointPOptions options = 2;
+}
+message MasterCheckpointPResponse {
+    optional CheckpointCommand command = 1;
+}
+
 /**
   * This interface contains meta master service endpoints for Alluxio standby masters.
   */
@@ -263,4 +285,9 @@ service MetaMasterMasterService {
    * Heartbeats to indicate the master is lost or not.
    */
   rpc MasterHeartbeat(MasterHeartbeatPRequest) returns (MasterHeartbeatPResponse);
+
+  /**
+   * Heartbeats to indicate the master is lost or not.
+   */
+  rpc MasterCheckpoint(stream MasterCheckpointPRequest) returns (stream MasterCheckpointPResponse);
 }

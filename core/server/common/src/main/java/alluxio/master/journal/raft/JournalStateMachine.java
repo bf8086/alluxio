@@ -11,9 +11,15 @@
 
 package alluxio.master.journal.raft;
 
+import alluxio.Constants;
 import alluxio.ProcessUtils;
 import alluxio.conf.PropertyKey;
 import alluxio.conf.ServerConfiguration;
+import alluxio.grpc.CheckpointCommand;
+import alluxio.grpc.MasterCheckpointPOptions;
+import alluxio.grpc.MasterCheckpointPRequest;
+import alluxio.grpc.MasterCheckpointPResponse;
+import alluxio.grpc.MetaMasterMasterServiceGrpc;
 import alluxio.master.journal.CatchupFuture;
 import alluxio.master.journal.checkpoint.CheckpointInputStream;
 import alluxio.master.journal.JournalUtils;
@@ -23,9 +29,12 @@ import alluxio.proto.journal.Journal.JournalEntry;
 import alluxio.util.StreamUtils;
 
 import com.google.common.base.Preconditions;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import com.google.protobuf.ByteString;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
-import io.atomix.copycat.server.Commit;
-import io.atomix.copycat.server.storage.snapshot.SnapshotReader;
+import io.grpc.stub.ClientCallStreamObserver;
+import io.grpc.stub.ClientResponseObserver;
+import io.grpc.stub.StreamObserver;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientRequest;
@@ -42,7 +51,6 @@ import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.statemachine.impl.BaseStateMachine;
 import org.apache.ratis.statemachine.impl.SimpleStateMachineStorage;
 import org.apache.ratis.statemachine.impl.SingleFileSnapshotInfo;
-import org.apache.ratis.util.AutoCloseableLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,13 +62,18 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.ObjectInputStream;
 import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import javax.annotation.concurrent.GuardedBy;
@@ -81,6 +94,7 @@ import javax.annotation.concurrent.ThreadSafe;
 public class JournalStateMachine extends BaseStateMachine {
   private static final Logger LOG = LoggerFactory.getLogger(JournalStateMachine.class);
   private static final long INVALID_SNAPSHOT = -1;
+  private static final int SNAPSHOT_CHUNK_SIZE = 1 * Constants.MB;
 
   /**
    * Journals managed by this applier.
@@ -98,6 +112,10 @@ public class JournalStateMachine extends BaseStateMachine {
   private volatile long mLastPrimaryStartSequenceNumber = 0;
   private volatile long mNextSequenceNumberToRead = 0;
   private volatile boolean mSnapshotting = false;
+  private volatile AtomicBoolean mDownloadingSnapshot = new AtomicBoolean(false);
+  private AtomicBoolean mSendingSnapshot = new AtomicBoolean(false);
+  private AtomicReference<File> mSnapshotToInstall = new AtomicReference<>();
+  private AtomicReference<TermIndex> mTermIndexToInstall = new AtomicReference<>();
   // The start time of the most recent snapshot
   private volatile long mLastSnapshotStartTime = 0;
   /**
@@ -105,8 +123,13 @@ public class JournalStateMachine extends BaseStateMachine {
    */
   private final BufferedJournalApplier mJournalApplier;
   private final SimpleStateMachineStorage mStorage = new SimpleStateMachineStorage();
+  private final Map<String, SnapshotInfo> mSnapshotCache = new ConcurrentHashMap<>();
   private SnapshotInfo mSnapshotInfo;
   private Object mRaftGroupId;
+
+  private final ThreadFactory mThreadFactory = new ThreadFactoryBuilder()
+      .setNameFormat("JournalStateMachinePool-%d").setDaemon(true).build();
+  private final ExecutorService mExecutor = Executors.newSingleThreadExecutor(mThreadFactory);
 
   /**
    * @param journals     master journals; these journals are still owned by the caller, not by the
@@ -165,18 +188,84 @@ public class JournalStateMachine extends BaseStateMachine {
 
   @Override
   public long takeSnapshot() {
-    // TODO: if secondary master
-    if (false) {
-      return snapshot();
+    // TODO: if secondary master has a more recent snapshot, install it
+    if (mJournalSystem.isLeader()) {
+      return maybeInstallSnapshotFromSecondary();
     } else {
-      // if primary
-      return this.maybeInstallSnapshotFromSecondary();
+      return takeSnapshotInternal();
     }
   }
 
   private long maybeInstallSnapshotFromSecondary() {
-    return INVALID_SNAPSHOT;
+    File tempFile = mSnapshotToInstall.get();
+    if (tempFile == null) {
+      LOG.info("No snapshot to install");
+      return INVALID_SNAPSHOT;
+    }
+    TermIndex lastApplied = getLastAppliedTermIndex();
+    SnapshotInfo latestSnapshot = getLatestSnapshot();
+    TermIndex lastInstalled = latestSnapshot == null ? null : latestSnapshot.getTermIndex();
+    TermIndex toBeInstalled = mTermIndexToInstall.get();
+    if (toBeInstalled == null) {
+      LOG.info("No snapshot term index info");
+      mSnapshotToInstall.set(null);
+      mTermIndexToInstall.set(null);
+      tempFile.delete();
+      return INVALID_SNAPSHOT;
+    }
+    if (lastInstalled != null && toBeInstalled.compareTo(lastInstalled) < 0) {
+      LOG.info("Snapshot to install {} is older than current {}", toBeInstalled, lastInstalled);
+      mSnapshotToInstall.set(null);
+      mTermIndexToInstall.set(null);
+      tempFile.delete();
+      return INVALID_SNAPSHOT;
+    }
+    final File snapshotFile = mStorage.getSnapshotFile(toBeInstalled.getTerm(), toBeInstalled.getIndex());
+    LOG.info("Moving temp snapshot {} to file {}", tempFile, snapshotFile);
+    try {
+      tempFile.renameTo(snapshotFile);
+    } catch (Exception e) {
+      LOG.error("Failed to move temp snapshot {} to file {}", tempFile, snapshotFile);
+      mSnapshotToInstall.set(null);
+      mTermIndexToInstall.set(null);
+      tempFile.delete();
+      return INVALID_SNAPSHOT;
+    }
+    mSnapshotToInstall.set(null);
+    mTermIndexToInstall.set(null);
+    tempFile.delete();
+    LOG.info("Completed moving snapshot at {} to file {}", toBeInstalled, snapshotFile);
+    return toBeInstalled.getIndex();
+
+//    // find latest follower snapshot
+//    for (Map.Entry<String, SnapshotInfo> followerSnapshot : mSnapshotCache.entrySet()) {
+//      if (mostRecentFollowerSnapshot == null
+//          || followerSnapshot.getValue().getTermIndex().compareTo(
+//              mostRecentFollowerSnapshot.getValue().getTermIndex()) > 0) {
+//        mostRecentFollowerSnapshot = followerSnapshot;
+//      }
+//    }
+//    // if a follower snapshot is newer
+//    if (mostRecentFollowerSnapshot != null
+//        && (getLatestSnapshot() == null
+//        || mostRecentFollowerSnapshot.getValue().getTermIndex().compareTo(
+//            getLatestSnapshot().getTermIndex()) > 0)) {
+//      maybeScheduleSnapshotDownload(mostRecentFollowerSnapshot.getKey(), mostRecentFollowerSnapshot.getValue());
+//    }
   }
+
+//  private void downloadSnapshot(String follower, SnapshotInfo snapshotInfo) {
+//    try {
+//      //TODO
+//    } finally {
+//      mDownloading.set(false);
+//    }
+//  }
+//
+//  private void maybeScheduleSnapshotDownload(String follower, SnapshotInfo snapshotInfo) {
+//    mDownloading.set(true);
+//    mExecutor.execute(() -> downloadSnapshot(follower, snapshotInfo));
+//  }
 
   @Override
   public SnapshotInfo getLatestSnapshot() {
@@ -245,6 +334,7 @@ public class JournalStateMachine extends BaseStateMachine {
   @Override
   public void notifyNotLeader(Collection<TransactionContext> pendingEntries) {
     mJournalSystem.setIsLeader(false);
+    mSnapshotCache.clear();
   }
 
   private static <T> CompletableFuture<T> completeExceptionally(Exception e) {
@@ -337,7 +427,7 @@ public class JournalStateMachine extends BaseStateMachine {
   }
   private static ByteBuffer buffer = ByteBuffer.allocate(Long.BYTES);
 
-  private long snapshot() {
+  private long takeSnapshotInternal() {
     // Snapshot format is [snapshotId, name1, bytes1, name2, bytes2, ...].
     if (mClosed) {
       return INVALID_SNAPSHOT;
@@ -362,8 +452,104 @@ public class JournalStateMachine extends BaseStateMachine {
     LOG.info("Completed snapshot up to SN {} in {}ms", snapshotId,
         System.currentTimeMillis() - mLastSnapshotStartTime);
     mSnapshotting = false;
+    // maybeSendSnapshotToPrimaryMaster();
     return last.getIndex();
   }
+
+  public SnapshotInfo maybeSendSnapshotToPrimaryMaster(MetaMasterMasterServiceGrpc.MetaMasterMasterServiceStub metaClient) {
+    if (mJournalSystem.isLeader()) {
+      return null;
+    }
+    SnapshotInfo snapshot = getLatestSnapshot();
+    if (snapshot == null) {
+      return null;
+    }
+    if (mSendingSnapshot.compareAndSet(false, true)) {
+      StreamObserver<MasterCheckpointPResponse> responseObserver =
+          new ClientResponseObserver<MasterCheckpointPRequest, MasterCheckpointPResponse>() {
+            private ClientCallStreamObserver<MasterCheckpointPRequest> mRequestStream;
+            final File mSnapshotFile = mStorage.getSnapshotFile(snapshot.getTerm(), snapshot.getIndex());
+            long mOffset = 0;
+            @Override
+            public void onNext(MasterCheckpointPResponse value) {
+              if (mRequestStream == null) {
+                LOG.error("No request stream assigned");
+                throw new IllegalStateException("No request stream assigned");
+              }
+              switch (value.getCommand()) {
+                case CheckpointCommand_Done:
+                  mSendingSnapshot.set(false);
+                  break;
+                case CheckpointCommand_Send:
+                  try (InputStream is = new FileInputStream(mSnapshotFile)) {
+                    is.skip(mOffset);
+                    boolean eof = false;
+                    if (is.available() <= SNAPSHOT_CHUNK_SIZE) {
+                      eof = true;
+                    }
+                    mRequestStream.onNext(MasterCheckpointPRequest.newBuilder()
+                        .setOptions(MasterCheckpointPOptions.newBuilder()
+                            .setOffset(mOffset)
+                            .setEof(eof)
+                            .setChunk(ByteString.readFrom(is, SNAPSHOT_CHUNK_SIZE))
+                            .setSnapshotTerm(snapshot.getTerm())
+                            .setSnapshotIndex(snapshot.getIndex()))
+                        .build());
+                    mOffset += SNAPSHOT_CHUNK_SIZE;
+                  } catch (FileNotFoundException e) {
+                    LOG.warn("Cannot find snapshot {} at {}", mSnapshotFile, mOffset, e);
+                    mRequestStream.onError(e);
+                    mSendingSnapshot.set(false);
+                  } catch (IOException e) {
+                    LOG.warn("Error sending snapshot {} at {}", mSnapshotFile, mOffset, e);
+                    mRequestStream.onError(e);
+                    mSendingSnapshot.set(false);
+                  }
+                  break;
+                case CheckpointCommand_Pause:
+                  break;
+                case CheckpointCommand_Unknown:
+                  LOG.error("Unknown response sending snapshot {} at {}", mSnapshotFile, mOffset);
+                  mRequestStream.onError(new IllegalStateException("Unknown response sending snapshot"));
+                  mSendingSnapshot.set(false);
+                  break;
+              }
+            }
+
+            @Override
+            public void onError(Throwable t) {
+              mSendingSnapshot.set(false);
+            }
+
+            @Override
+            public void onCompleted() {
+              mSendingSnapshot.set(false);
+
+            }
+
+            @Override
+            public void beforeStart(ClientCallStreamObserver<MasterCheckpointPRequest> requestStream) {
+              mRequestStream = requestStream;
+            }
+          };
+      StreamObserver<MasterCheckpointPRequest> requestObserver = metaClient.masterCheckpoint(responseObserver);
+      requestObserver.onNext(MasterCheckpointPRequest.newBuilder()
+          .setOptions(MasterCheckpointPOptions.newBuilder()
+              .setOffset(0)
+              .setSnapshotTerm(snapshot.getTerm())
+              .setSnapshotIndex(snapshot.getIndex())
+              .build())
+          .build());
+    }
+    return null;
+  }
+
+//  public void maybeSendSnapshotToPrimaryMaster() {
+//    mExecutor.execute(() -> sendSnapshotToPrimaryMaster());
+//  }
+//
+//  private void sendSnapshotToPrimaryMaster() {
+//  }
 
   private void install(DataInputStream inputStream) {
     if (mClosed) {
@@ -433,6 +619,7 @@ public class JournalStateMachine extends BaseStateMachine {
       LOG.warn("Unexpected call to resetState() on a read-only journal state machine");
       return;
     }
+    mSnapshotCache.clear();
     for (RaftJournal journal : mJournals.values()) {
       journal.getStateMachine().resetState();
     }
@@ -489,5 +676,123 @@ public class JournalStateMachine extends BaseStateMachine {
     if (mRaftGroupId == groupMemberId.getGroupId()) {
       mJournalSystem.setIsLeader(groupMemberId.getPeerId() == raftPeerId);
     }
+  }
+
+  public StreamObserver<MasterCheckpointPRequest> receiveSnapshotFromFollower(
+      StreamObserver<MasterCheckpointPResponse> responseStreamObserver) {
+    SnapshotInfo currentSnapshot = getLatestSnapshot();
+    LOG.info("received upload snapshot request from follower");
+    return new StreamObserver<MasterCheckpointPRequest>() {
+      TermIndex mTermIndex;
+      File mTempFile = null;
+      FileOutputStream mOutputStream = null;
+      @Override
+      public void onNext(MasterCheckpointPRequest request) {
+        try {
+          onNextInternal(request);
+        } catch (IOException e) {
+          LOG.error("Unexpected exception uploading snapshot", e);
+          responseStreamObserver.onError(e);
+          cleanup();
+        }
+      }
+
+      public void cleanup() {
+        if (mTermIndex != null) {
+          mDownloadingSnapshot.compareAndSet(true, false);
+        }
+        if (mOutputStream != null) {
+          try {
+            mOutputStream.close();
+          } catch (IOException ioException) {
+            LOG.error("Error closing snapshot file", ioException);
+          }
+        }
+        if (!mTempFile.delete()) {
+          LOG.error("Error deleting snapshot file {}", mTempFile.getPath());
+        }
+      }
+
+      public void onNextInternal(MasterCheckpointPRequest request) throws IOException {
+        TermIndex termIndex = TermIndex.newTermIndex(
+            request.getOptions().getSnapshotTerm(), request.getOptions().getSnapshotIndex());
+        if (currentSnapshot != null && currentSnapshot.getTermIndex().compareTo(termIndex) >= 0) {
+          // we have a newer one, close the request
+          LOG.info("discard upload request from {}. current {}, request {}", request.getMasterId(), currentSnapshot.getTermIndex(), termIndex);
+          responseStreamObserver.onCompleted();
+          cleanup();
+          return;
+        }
+        if (mTermIndex == null) {
+          // new start, check if there is already a download
+          LOG.info("new upload request from {}. current {}, request {}", request.getMasterId(), currentSnapshot.getTermIndex(), termIndex);
+          if (!mDownloadingSnapshot.compareAndSet(false, true)) {
+            LOG.info("another upload is inprogress");
+            responseStreamObserver.onCompleted();
+            return;
+          }
+          if (mSnapshotToInstall.get() != null) {
+            LOG.info("another upload is pending install");
+            mDownloadingSnapshot.set(false);
+            responseStreamObserver.onCompleted();
+            return;
+          }
+          mTermIndex = termIndex;
+          // start a new file
+          mTempFile = File.createTempFile("ratis_snapshot_" + System.currentTimeMillis() + "_",
+              ".dat", new File("/tmp/"));
+          mTempFile.deleteOnExit();
+          responseStreamObserver.onNext(
+              MasterCheckpointPResponse.newBuilder()
+                  .setCommand(CheckpointCommand.CheckpointCommand_Send)
+                  .build());
+          LOG.info("requesting snapshot from {}", request.getMasterId());
+        } else {
+          if (!termIndex.equals(mTermIndex)) {
+            throw new IOException(String.format(
+                "mismatched term index when uploading the snapshot expected: {} actual: {}", mTermIndex, termIndex));
+          }
+          if (!request.getOptions().hasChunk()) {
+            throw new IOException(String.format("A chunk is missing from the request", request));
+          }
+          // write the chunk
+          if (mOutputStream == null) {
+            LOG.info("start writing to temporary file {}", mTempFile.getPath());
+            mOutputStream = new FileOutputStream(mTempFile);
+          }
+          long position = mOutputStream.getChannel().position();
+          if (position != request.getOptions().getOffset()) {
+            throw new IOException(String.format("Mismatched offset in file {}, expect {}",
+                position, request.getOptions().getOffset()));
+          }
+          mOutputStream.write(request.getOptions().getChunk().toByteArray());
+          if (request.getOptions().getEof()) {
+            LOG.info("Completed writing to temporary file {} with size {}",
+                mTempFile.getPath(), mOutputStream.getChannel().position());
+            mOutputStream.close();
+            mOutputStream = null;
+          }
+        }
+      }
+
+      @Override
+      public void onError(Throwable t) {
+        LOG.error("Received onError event.", t);
+        cleanup();
+      }
+
+      @Override
+      public void onCompleted() {
+        if (mOutputStream != null) {
+          LOG.error("Request completed with unfinished upload.");
+          cleanup();
+          return;
+        }
+        mSnapshotToInstall.set(mTempFile);
+        if (mTermIndex != null) {
+          mDownloadingSnapshot.compareAndSet(true, false);
+        }
+      }
+    };
   }
 }
