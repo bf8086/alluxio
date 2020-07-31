@@ -36,6 +36,7 @@ import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import io.grpc.stub.ClientCallStreamObserver;
 import io.grpc.stub.ClientResponseObserver;
 import io.grpc.stub.StreamObserver;
+import org.apache.commons.io.IOUtils;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientRequest;
@@ -491,7 +492,9 @@ public class JournalStateMachine extends BaseStateMachine {
           new ClientResponseObserver<MasterCheckpointPRequest, MasterCheckpointPResponse>() {
             private ClientCallStreamObserver<MasterCheckpointPRequest> mRequestStream;
             final File mSnapshotFile = mStorage.getSnapshotFile(snapshot.getTerm(), snapshot.getIndex());
+            final long mLength = mSnapshotFile.length();
             long mOffset = 0;
+
             @Override
             public void onNext(MasterCheckpointPResponse value) {
               if (mRequestStream == null) {
@@ -513,19 +516,25 @@ public class JournalStateMachine extends BaseStateMachine {
                   try (InputStream is = new FileInputStream(mSnapshotFile)) {
                     is.skip(mOffset);
                     boolean eof = false;
-                    if (is.available() <= SNAPSHOT_CHUNK_SIZE) {
+                    int chunkSize = SNAPSHOT_CHUNK_SIZE;
+                    long available = mLength - mOffset;
+                    if (available <= SNAPSHOT_CHUNK_SIZE) {
                       eof = true;
+                      chunkSize = (int) available;
                     }
+                    byte[] buffer = new byte[chunkSize];
+                    IOUtils.readFully(is, buffer);
                     mRequestStream.onNext(MasterCheckpointPRequest.newBuilder()
                         .setOptions(MasterCheckpointPOptions.newBuilder()
                             .setOffset(mOffset)
                             .setEof(eof)
-                            .setChunk(ByteString.readFrom(is, SNAPSHOT_CHUNK_SIZE))
+                            .setChunk(ByteString.copyFrom(buffer))
                             .setSnapshotTerm(snapshot.getTerm())
                             .setSnapshotIndex(snapshot.getIndex()))
                         .setMasterId(this.hashCode())
                         .build());
-                    mOffset += SNAPSHOT_CHUNK_SIZE;
+                    mOffset += chunkSize;
+                    LOG.info("sent {} bytes from file {}", mOffset, mSnapshotFile.getPath());
                   } catch (FileNotFoundException e) {
                     LOG.warn("Cannot find snapshot {} at {}", mSnapshotFile, mOffset, e);
                     mRequestStream.onError(e);
@@ -720,6 +729,7 @@ public class JournalStateMachine extends BaseStateMachine {
       TermIndex mTermIndex;
       File mTempFile = null;
       FileOutputStream mOutputStream = null;
+      long mBytesWritten = 0;
       @Override
       public void onNext(MasterCheckpointPRequest request) {
         try {
@@ -809,10 +819,12 @@ public class JournalStateMachine extends BaseStateMachine {
           }
           long position = mOutputStream.getChannel().position();
           if (position != request.getOptions().getOffset()) {
-            throw new IOException(String.format("Mismatched offset in file %s, expect %s",
-                position, request.getOptions().getOffset()));
+            throw new IOException(String.format("Mismatched offset in file %d, expect %d, bytes written %d",
+                position, request.getOptions().getOffset(), mBytesWritten));
           }
           mOutputStream.write(request.getOptions().getChunk().toByteArray());
+          mBytesWritten += request.getOptions().getChunk().size();
+          LOG.info("written {} bytes to snapshot file {}", mBytesWritten, mTempFile.getPath());
           if (request.getOptions().getEof()) {
             LOG.info("Completed writing to temporary file {} with size {}",
                 mTempFile.getPath(), mOutputStream.getChannel().position());
