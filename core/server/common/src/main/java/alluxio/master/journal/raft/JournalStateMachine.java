@@ -27,6 +27,7 @@ import alluxio.master.journal.Journaled;
 import alluxio.master.journal.sink.JournalSink;
 import alluxio.proto.journal.Journal.JournalEntry;
 import alluxio.util.StreamUtils;
+import alluxio.util.logging.SamplingLogger;
 
 import com.google.common.base.Preconditions;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
@@ -93,8 +94,11 @@ import javax.annotation.concurrent.ThreadSafe;
 @ThreadSafe
 public class JournalStateMachine extends BaseStateMachine {
   private static final Logger LOG = LoggerFactory.getLogger(JournalStateMachine.class);
+  private static final Logger SAMPLING_LOG = new SamplingLogger(LOG, 30L * Constants.SECOND_MS);
   private static final long INVALID_SNAPSHOT = -1;
   private static final int SNAPSHOT_CHUNK_SIZE = 1 * Constants.MB;
+  private static final long SNAPSHOT_PERIOD_ENTRIES =
+      ServerConfiguration.global().getLong(PropertyKey.MASTER_JOURNAL_CHECKPOINT_PERIOD_ENTRIES);
 
   /**
    * Journals managed by this applier.
@@ -124,7 +128,6 @@ public class JournalStateMachine extends BaseStateMachine {
   private final BufferedJournalApplier mJournalApplier;
   private final SimpleStateMachineStorage mStorage = new SimpleStateMachineStorage();
   private final Map<String, SnapshotInfo> mSnapshotCache = new ConcurrentHashMap<>();
-  private SnapshotInfo mSnapshotInfo;
   private Object mRaftGroupId;
 
   private final ThreadFactory mThreadFactory = new ThreadFactoryBuilder()
@@ -180,8 +183,6 @@ public class JournalStateMachine extends BaseStateMachine {
       resetState();
       setLastAppliedTermIndex(last);
       install(in);
-//    } catch (ClassNotFoundException e) {
-//      throw new IllegalStateException(e);
     }
     return last.getIndex();
   }
@@ -199,7 +200,7 @@ public class JournalStateMachine extends BaseStateMachine {
   private long maybeInstallSnapshotFromSecondary() {
     File tempFile = mSnapshotToInstall.get();
     if (tempFile == null) {
-      LOG.info("No snapshot to install");
+      SAMPLING_LOG.info("No snapshot to install");
       return INVALID_SNAPSHOT;
     }
     TermIndex lastApplied = getLastAppliedTermIndex();
@@ -278,19 +279,19 @@ public class JournalStateMachine extends BaseStateMachine {
   public CompletableFuture<TermIndex> notifyInstallSnapshotFromLeader(
       RaftProtos.RoleInfoProto roleInfoProto, TermIndex firstTermIndexInLog) {
 
-    String leaderNodeId = RaftPeerId.valueOf(roleInfoProto.getSelf().getId())
-        .toString();
-
-    LOG.info("Received install snapshot notification form leader: {} with "
-        + "term index: {}", leaderNodeId, firstTermIndexInLog);
-
-    if (!roleInfoProto.getRole().equals(RaftProtos.RaftPeerRole.LEADER)) {
-      // A non-leader Ratis server should not send this notification.
-      LOG.error("Received Install Snapshot notification from non-leader "
-          + "node: {}. Ignoring the notification.", leaderNodeId);
-      return completeExceptionally(new RuntimeException("Received notification to "
-          + "install snapshot from non-leader OM node"));
-    }
+//    String leaderNodeId = RaftPeerId.valueOf(roleInfoProto.getSelf().getId())
+//        .toString();
+//
+//    LOG.info("Received install snapshot notification form leader: {} with "
+//        + "term index: {}", leaderNodeId, firstTermIndexInLog);
+//
+//    if (!roleInfoProto.getRole().equals(RaftProtos.RaftPeerRole.LEADER)) {
+//      // A non-leader Ratis server should not send this notification.
+//      LOG.error("Received Install Snapshot notification from non-leader "
+//          + "node: {}. Ignoring the notification.", leaderNodeId);
+//      return completeExceptionally(new RuntimeException("Received notification to "
+//          + "install snapshot from non-leader OM node"));
+//    }
 // TODO: copy from master and install
 //    CompletableFuture<TermIndex> future = CompletableFuture.supplyAsync(
 //        () -> this.install(leaderNodeId),
@@ -460,8 +461,10 @@ public class JournalStateMachine extends BaseStateMachine {
     if (mJournalSystem.isLeader()) {
       return null;
     }
+    LOG.info("Heartbeat to check latest snapshot to send.");
     SnapshotInfo snapshot = getLatestSnapshot();
     if (snapshot == null) {
+      LOG.info("No snapshot to send");
       return null;
     }
     if (mSendingSnapshot.compareAndSet(false, true)) {
@@ -533,7 +536,6 @@ public class JournalStateMachine extends BaseStateMachine {
             @Override
             public void onCompleted() {
               mSendingSnapshot.set(false);
-
             }
 
             @Override
@@ -550,6 +552,8 @@ public class JournalStateMachine extends BaseStateMachine {
               .setSnapshotIndex(snapshot.getIndex())
               .build())
           .build());
+    } else {
+      LOG.info("Another send is in progress");
     }
     return null;
   }
@@ -688,7 +692,7 @@ public class JournalStateMachine extends BaseStateMachine {
     }
   }
 
-  public StreamObserver<MasterCheckpointPRequest> receiveSnapshotFromFollower(
+  public StreamObserver<MasterCheckpointPRequest> maybeCopySnapshotFromFollower(
       StreamObserver<MasterCheckpointPResponse> responseStreamObserver) {
     SnapshotInfo currentSnapshot = getLatestSnapshot();
     LOG.info("received upload snapshot request from follower");
@@ -733,7 +737,15 @@ public class JournalStateMachine extends BaseStateMachine {
             request.getOptions().getSnapshotTerm(), request.getOptions().getSnapshotIndex());
         if (currentSnapshot != null && currentSnapshot.getTermIndex().compareTo(termIndex) >= 0) {
           // we have a newer one, close the request
-          LOG.info("discard upload request from {}. current {}, request {}", request.getMasterId(), currentSnapshot.getTermIndex(), termIndex);
+          LOG.info("discard older upload request from {}. current {}, request {}",
+              request.getMasterId(), currentSnapshot.getTermIndex(), termIndex);
+          responseStreamObserver.onCompleted();
+          cleanup();
+          return;
+        }
+        if (termIndex.getIndex() - currentSnapshot.getIndex() < SNAPSHOT_PERIOD_ENTRIES / 4) {
+          LOG.info("discard worthless upload request from {}. current {}, request {}",
+              request.getMasterId(), currentSnapshot.getTermIndex(), termIndex);
           responseStreamObserver.onCompleted();
           cleanup();
           return;
@@ -786,6 +798,7 @@ public class JournalStateMachine extends BaseStateMachine {
                 mTempFile.getPath(), mOutputStream.getChannel().position());
             mOutputStream.close();
             mOutputStream = null;
+            responseStreamObserver.onCompleted();
           }
         }
       }

@@ -575,7 +575,7 @@ public final class RaftJournalSystem extends AbstractJournalSystem {
 
   @Override
   public StreamObserver<MasterCheckpointPRequest> receiveCheckpointFromFollower(StreamObserver<MasterCheckpointPResponse> metaClient) {
-    return mStateMachine.receiveSnapshotFromFollower(metaClient);
+    return mStateMachine.maybeCopySnapshotFromFollower(metaClient);
   }
 
   /**
