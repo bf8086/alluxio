@@ -197,7 +197,8 @@ public class JournalStateMachine extends BaseStateMachine {
     }
   }
 
-  private long maybeInstallSnapshotFromSecondary() {
+  private long
+  maybeInstallSnapshotFromSecondary() {
     File tempFile = mSnapshotToInstall.get();
     if (tempFile == null) {
       SAMPLING_LOG.info("No snapshot to install");
@@ -209,15 +210,15 @@ public class JournalStateMachine extends BaseStateMachine {
     TermIndex toBeInstalled = mTermIndexToInstall.get();
     if (toBeInstalled == null) {
       LOG.info("No snapshot term index info");
-      mSnapshotToInstall.set(null);
       mTermIndexToInstall.set(null);
+      mSnapshotToInstall.set(null);
       tempFile.delete();
       return INVALID_SNAPSHOT;
     }
     if (lastInstalled != null && toBeInstalled.compareTo(lastInstalled) < 0) {
       LOG.info("Snapshot to install {} is older than current {}", toBeInstalled, lastInstalled);
-      mSnapshotToInstall.set(null);
       mTermIndexToInstall.set(null);
+      mSnapshotToInstall.set(null);
       tempFile.delete();
       return INVALID_SNAPSHOT;
     }
@@ -226,15 +227,22 @@ public class JournalStateMachine extends BaseStateMachine {
     try {
       tempFile.renameTo(snapshotFile);
     } catch (Exception e) {
-      LOG.error("Failed to move temp snapshot {} to file {}", tempFile, snapshotFile);
-      mSnapshotToInstall.set(null);
+      LOG.error("Failed to move temp snapshot {} to file {}", tempFile, snapshotFile, e);
       mTermIndexToInstall.set(null);
+      mSnapshotToInstall.set(null);
       tempFile.delete();
       return INVALID_SNAPSHOT;
     }
-    mSnapshotToInstall.set(null);
+    try {
+      mStorage.loadLatestSnapshot();
+    } catch (Exception e) {
+      LOG.error("Failed loading snapshot file {}", snapshotFile, e);
+      mTermIndexToInstall.set(null);
+      mSnapshotToInstall.set(null);
+      return INVALID_SNAPSHOT;
+    }
     mTermIndexToInstall.set(null);
-    tempFile.delete();
+    mSnapshotToInstall.set(null);
     LOG.info("Completed moving snapshot at {} to file {}", toBeInstalled, snapshotFile);
     return toBeInstalled.getIndex();
 
@@ -439,17 +447,28 @@ public class JournalStateMachine extends BaseStateMachine {
     mLastSnapshotStartTime = System.currentTimeMillis();
     long snapshotId = mNextSequenceNumberToRead - 1;
     TermIndex last = getLastAppliedTermIndex();
-    final File snapshotFile = mStorage.getSnapshotFile(last.getTerm(), last.getIndex());
-    LOG.info("Taking a snapshot to file {}", snapshotFile);
-    try (FileOutputStream sws = new FileOutputStream(snapshotFile)) {
+    File tempFile;
+    try {
+      tempFile = File.createTempFile("ratis_snapshot_" + System.currentTimeMillis() + "_",
+          ".dat", new File("/tmp/"));
+    } catch (IOException e) {
+      LOG.warn("Failed to create temp snapshot", e);
+      return INVALID_SNAPSHOT;
+    }
+    LOG.info("Taking a snapshot to file {}", tempFile);
+    try (FileOutputStream sws = new FileOutputStream(tempFile)) {
       buffer.putLong(0, snapshotId);
       sws.write(buffer.array());
       JournalUtils.writeToCheckpoint(sws, getStateMachines());
       mStorage.loadLatestSnapshot();
     } catch (Exception e) {
-      ProcessUtils.fatalError(LOG, e, "Failed to take snapshot: %s", snapshotId);
-      throw new RuntimeException(e);
+      tempFile.delete();
+      LOG.warn("Failed to take snapshot: {}", snapshotId, e);
+      return INVALID_SNAPSHOT;
     }
+    final File snapshotFile = mStorage.getSnapshotFile(last.getTerm(), last.getIndex());
+    LOG.info("Renaming a snapshot file {} to {}", tempFile, snapshotFile);
+    tempFile.renameTo(snapshotFile);
     LOG.info("Completed snapshot up to SN {} in {}ms", snapshotId,
         System.currentTimeMillis() - mLastSnapshotStartTime);
     mSnapshotting = false;
@@ -536,6 +555,7 @@ public class JournalStateMachine extends BaseStateMachine {
             @Override
             public void onCompleted() {
               mSendingSnapshot.set(false);
+              mRequestStream.onCompleted();
             }
 
             @Override
@@ -704,7 +724,7 @@ public class JournalStateMachine extends BaseStateMachine {
       public void onNext(MasterCheckpointPRequest request) {
         try {
           onNextInternal(request);
-        } catch (IOException e) {
+        } catch (Exception e) {
           LOG.error("Unexpected exception uploading snapshot", e);
           responseStreamObserver.onError(e);
           cleanup();
@@ -722,7 +742,7 @@ public class JournalStateMachine extends BaseStateMachine {
             LOG.error("Error closing snapshot file", ioException);
           }
         }
-        if (!mTempFile.delete()) {
+        if (mTempFile != null && !mTempFile.delete()) {
           LOG.error("Error deleting snapshot file {}", mTempFile.getPath());
         }
       }
@@ -743,7 +763,7 @@ public class JournalStateMachine extends BaseStateMachine {
           cleanup();
           return;
         }
-        if (termIndex.getIndex() - currentSnapshot.getIndex() < SNAPSHOT_PERIOD_ENTRIES / 4) {
+        if (currentSnapshot != null && termIndex.getIndex() - currentSnapshot.getIndex() < SNAPSHOT_PERIOD_ENTRIES / 4) {
           LOG.info("discard worthless upload request from {}. current {}, request {}",
               request.getMasterId(), currentSnapshot.getTermIndex(), termIndex);
           responseStreamObserver.onCompleted();
@@ -752,7 +772,7 @@ public class JournalStateMachine extends BaseStateMachine {
         }
         if (mTermIndex == null) {
           // new start, check if there is already a download
-          LOG.info("new upload request from {}. current {}, request {}", request.getMasterId(), currentSnapshot.getTermIndex(), termIndex);
+          LOG.info("new upload request from {}. current {}, request {}", request.getMasterId(), currentSnapshot, termIndex);
           if (!mDownloadingSnapshot.compareAndSet(false, true)) {
             LOG.info("another upload is inprogress");
             responseStreamObserver.onCompleted();
@@ -798,7 +818,18 @@ public class JournalStateMachine extends BaseStateMachine {
                 mTempFile.getPath(), mOutputStream.getChannel().position());
             mOutputStream.close();
             mOutputStream = null;
+            mSnapshotToInstall.set(mTempFile);
+            mTermIndexToInstall.set(mTermIndex);
+            if (mTermIndex != null) {
+              mDownloadingSnapshot.compareAndSet(true, false);
+            }
+            LOG.info("Finished copying snapshot from follower to local file {}.", mTempFile);
             responseStreamObserver.onCompleted();
+          } else {
+            responseStreamObserver.onNext(
+                MasterCheckpointPResponse.newBuilder()
+                    .setCommand(CheckpointCommand.CheckpointCommand_Send)
+                    .build());
           }
         }
       }
@@ -815,10 +846,6 @@ public class JournalStateMachine extends BaseStateMachine {
           LOG.error("Request completed with unfinished upload.");
           cleanup();
           return;
-        }
-        mSnapshotToInstall.set(mTempFile);
-        if (mTermIndex != null) {
-          mDownloadingSnapshot.compareAndSet(true, false);
         }
       }
     };

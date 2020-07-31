@@ -321,9 +321,16 @@ public final class RaftJournalSystem extends AbstractJournalSystem {
     RaftServerConfigKeys.Rpc.setTimeoutMin(properties,
         leaderElectionMinTimeout);
     long leaderElectionMaxTimeout = leaderElectionMinTimeout.toLong(
-        TimeUnit.MILLISECONDS) + 200;
+        TimeUnit.MILLISECONDS) + 2000;
     RaftServerConfigKeys.Rpc.setTimeoutMax(properties,
         TimeDuration.valueOf(leaderElectionMaxTimeout, TimeUnit.MILLISECONDS));
+
+    // request timeout
+    RaftServerConfigKeys.Rpc.setRequestTimeout(properties,
+        TimeDuration.valueOf(leaderElectionMaxTimeout, TimeUnit.MILLISECONDS));
+//
+//    RaftServerConfigKeys.RetryCache.setExpiryTime(properties,
+//        TimeDuration.valueOf(leaderElectionMaxTimeout * 10, TimeUnit.MILLISECONDS));
 
 
     // snapshot interval
@@ -339,12 +346,6 @@ public final class RaftJournalSystem extends AbstractJournalSystem {
     GrpcConfigKeys.setMessageSizeMax(properties,
         SizeInBytes.valueOf(messageSize));
 
-    // request timeout
-    RaftServerConfigKeys.Rpc.setRequestTimeout(properties,
-        TimeDuration.valueOf(leaderElectionMaxTimeout / 2, TimeUnit.MILLISECONDS));
-
-    RaftServerConfigKeys.RetryCache.setExpiryTime(properties,
-        TimeDuration.valueOf(leaderElectionMaxTimeout / 2, TimeUnit.MILLISECONDS));
 
     // build server
     mServer = RaftServer.newBuilder()
