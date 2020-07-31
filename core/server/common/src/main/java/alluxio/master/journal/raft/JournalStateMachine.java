@@ -774,7 +774,7 @@ public class JournalStateMachine extends BaseStateMachine {
           // new start, check if there is already a download
           LOG.info("new upload request from {}. current {}, request {}", request.getMasterId(), currentSnapshot, termIndex);
           if (!mDownloadingSnapshot.compareAndSet(false, true)) {
-            LOG.info("another upload is inprogress");
+            LOG.info("another upload is in progress");
             responseStreamObserver.onCompleted();
             return;
           }
@@ -797,10 +797,10 @@ public class JournalStateMachine extends BaseStateMachine {
         } else {
           if (!termIndex.equals(mTermIndex)) {
             throw new IOException(String.format(
-                "mismatched term index when uploading the snapshot expected: {} actual: {}", mTermIndex, termIndex));
+                "mismatched term index when uploading the snapshot expected: %s actual: %s", mTermIndex, termIndex));
           }
           if (!request.getOptions().hasChunk()) {
-            throw new IOException(String.format("A chunk is missing from the request", request));
+            throw new IOException(String.format("A chunk is missing from the request %s", request));
           }
           // write the chunk
           if (mOutputStream == null) {
@@ -809,7 +809,7 @@ public class JournalStateMachine extends BaseStateMachine {
           }
           long position = mOutputStream.getChannel().position();
           if (position != request.getOptions().getOffset()) {
-            throw new IOException(String.format("Mismatched offset in file {}, expect {}",
+            throw new IOException(String.format("Mismatched offset in file %s, expect %s",
                 position, request.getOptions().getOffset()));
           }
           mOutputStream.write(request.getOptions().getChunk().toByteArray());
