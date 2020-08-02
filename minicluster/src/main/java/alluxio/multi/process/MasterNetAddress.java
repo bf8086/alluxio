@@ -24,6 +24,7 @@ public class MasterNetAddress {
   private final int mRpcPort;
   private final int mWebPort;
   private final int mEmbeddedJournalPort;
+  private int mDebugPort;
 
   /**
    * @param hostname master hostname
@@ -73,6 +74,11 @@ public class MasterNetAddress {
         .add("rpcPort", mRpcPort)
         .add("webPort", mWebPort)
         .add("embeddedJournalPort", mEmbeddedJournalPort)
+        .add("debugPort", mDebugPort)
         .toString();
+  }
+
+  public void setDebugPort(int mDebugPort) {
+    this.mDebugPort = mDebugPort;
   }
 }

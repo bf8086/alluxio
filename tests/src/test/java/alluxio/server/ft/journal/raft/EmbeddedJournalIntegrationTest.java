@@ -84,16 +84,47 @@ public final class EmbeddedJournalIntegrationTest extends BaseIntegrationTest {
         .setNumWorkers(0)
         .addProperty(PropertyKey.MASTER_JOURNAL_TYPE, JournalType.EMBEDDED.toString())
         .addProperty(PropertyKey.MASTER_JOURNAL_FLUSH_TIMEOUT_MS, "5min")
+        .addProperty(PropertyKey.MASTER_JOURNAL_CHECKPOINT_PERIOD_ENTRIES, "500")
+        .addProperty(PropertyKey.MASTER_JOURNAL_LOG_SIZE_BYTES_MAX, "50KB")
+        .addProperty(PropertyKey.MASTER_STANDBY_HEARTBEAT_INTERVAL, "5s")
         // To make the test run faster.
-        .addProperty(PropertyKey.MASTER_EMBEDDED_JOURNAL_ELECTION_TIMEOUT, "750ms")
-        .addProperty(PropertyKey.MASTER_EMBEDDED_JOURNAL_HEARTBEAT_INTERVAL, "250ms")
+//        .addProperty(PropertyKey.MASTER_EMBEDDED_JOURNAL_ELECTION_TIMEOUT, "750ms")
+//        .addProperty(PropertyKey.MASTER_EMBEDDED_JOURNAL_HEARTBEAT_INTERVAL, "250ms")
         .build();
     mCluster.start();
 
     AlluxioURI testDir = new AlluxioURI("/dir");
     FileSystem fs = mCluster.getFileSystemClient();
     fs.createDirectory(testDir);
-    mCluster.waitForAndKillPrimaryMaster(RESTART_TIMEOUT_MS);
+    Thread.sleep(300);
+    int pmi = mCluster.getPrimaryMasterIndex(5000);
+    int catchupMaster = (pmi + 1) % NUM_MASTERS;
+    System.out.println("primary master: " + mCluster.getMasterAddresses().get(pmi));
+    System.out.println("master to play catchup: " + mCluster.getMasterAddresses().get(catchupMaster));
+    mCluster.stopMaster(catchupMaster);
+    mCluster.stopMaster(pmi);
+    Thread.sleep(3000);
+    mCluster.startMaster(pmi);
+    Thread.sleep(3000);
+    System.out.println("restarted primary master");
+    System.out.println("writing new files 0 ~ 900");
+    for (int i = 0; i < 900; i++) {
+      fs.createDirectory(testDir.join("file" + i));
+    }
+    Thread.sleep(3000);
+    System.out.println("writing new files 900 ~ 1000");
+    for (int i = 900; i < 1800; i++) {
+      fs.createDirectory(testDir.join("file" + i));
+    }
+    Thread.sleep(3000);
+    System.out.println("writing new files 1000 ~ 1500");
+    for (int i = 1800; i < 2700; i++) {
+      fs.createDirectory(testDir.join("file" + i));
+    }
+    System.out.println("writing files done. restarting catchup master");
+    mCluster.startMaster(catchupMaster);
+    System.out.println("finished restarting master");
+    Thread.sleep(3000);
     assertTrue(fs.exists(testDir));
     mCluster.notifySuccess();
   }
