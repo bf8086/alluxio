@@ -102,29 +102,29 @@ public final class EmbeddedJournalIntegrationTest extends BaseIntegrationTest {
     System.out.println("primary master: " + mCluster.getMasterAddresses().get(pmi));
     System.out.println("master to play catchup: " + mCluster.getMasterAddresses().get(catchupMaster));
     mCluster.stopMaster(catchupMaster);
-    mCluster.stopMaster(pmi);
-    Thread.sleep(3000);
-    mCluster.startMaster(pmi);
+//    mCluster.stopMaster(pmi);
+//    Thread.sleep(3000);
+//    mCluster.startMaster(pmi);
     Thread.sleep(3000);
     System.out.println("restarted primary master");
     System.out.println("writing new files 0 ~ 900");
-    for (int i = 0; i < 900; i++) {
+    for (int i = 0; i < 500; i++) {
       fs.createDirectory(testDir.join("file" + i));
     }
     Thread.sleep(3000);
     System.out.println("writing new files 900 ~ 1000");
-    for (int i = 900; i < 1800; i++) {
+    for (int i = 500; i < 1000; i++) {
       fs.createDirectory(testDir.join("file" + i));
     }
     Thread.sleep(3000);
-    System.out.println("writing new files 1000 ~ 1500");
-    for (int i = 1800; i < 2700; i++) {
-      fs.createDirectory(testDir.join("file" + i));
-    }
+//    System.out.println("writing new files 1000 ~ 1500");
+//    for (int i = 1800; i < 2700; i++) {
+//      fs.createDirectory(testDir.join("file" + i));
+//    }
     System.out.println("writing files done. restarting catchup master");
     mCluster.startMaster(catchupMaster);
     System.out.println("finished restarting master");
-    Thread.sleep(3000);
+    Thread.sleep(300000);
     assertTrue(fs.exists(testDir));
     mCluster.notifySuccess();
   }

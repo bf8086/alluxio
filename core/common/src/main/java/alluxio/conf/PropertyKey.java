@@ -1834,7 +1834,7 @@ public final class PropertyKey implements Comparable<PropertyKey> {
           .build();
   public static final PropertyKey MASTER_JOURNAL_LOG_SIZE_BYTES_MAX =
       new Builder(Name.MASTER_JOURNAL_LOG_SIZE_BYTES_MAX)
-          .setDefaultValue("10MB")
+          .setDefaultValue("50KB")
           .setDescription("If a log file is bigger than this value, it will rotate to next "
               + "file.")
           .setConsistencyCheckLevel(ConsistencyCheckLevel.WARN)
@@ -1861,7 +1861,7 @@ public final class PropertyKey implements Comparable<PropertyKey> {
           .build();
   public static final PropertyKey MASTER_JOURNAL_CHECKPOINT_PERIOD_ENTRIES =
       new Builder(Name.MASTER_JOURNAL_CHECKPOINT_PERIOD_ENTRIES)
-          .setDefaultValue(2000000)
+          .setDefaultValue(200)
           .setDescription("The number of journal entries to write before creating a new "
               + "journal checkpoint.")
           .setConsistencyCheckLevel(ConsistencyCheckLevel.WARN)

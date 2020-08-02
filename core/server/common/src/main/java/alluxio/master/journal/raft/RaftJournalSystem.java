@@ -333,10 +333,10 @@ public final class RaftJournalSystem extends AbstractJournalSystem {
 //        TimeDuration.valueOf(leaderElectionMaxTimeout * 10, TimeUnit.MILLISECONDS));
 
     // snapshot retention
-    RaftServerConfigKeys.Snapshot.setRetentionFileNum(properties, 2);
+    // RaftServerConfigKeys.Snapshot.setRetentionFileNum(properties, 2);
 
     // purge gap
-    RaftServerConfigKeys.Log.setPurgeGap(properties, 200);
+    RaftServerConfigKeys.Log.setPurgeGap(properties, 300);
 
     // purge up to index
     RaftServerConfigKeys.Log.setPurgeUptoSnapshotIndex(properties, true);
