@@ -37,6 +37,7 @@ import io.grpc.stub.ClientCallStreamObserver;
 import io.grpc.stub.ClientResponseObserver;
 import io.grpc.stub.StreamObserver;
 import org.apache.commons.io.IOUtils;
+import org.apache.ratis.io.MD5Hash;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientRequest;
@@ -53,6 +54,7 @@ import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.statemachine.impl.BaseStateMachine;
 import org.apache.ratis.statemachine.impl.SimpleStateMachineStorage;
 import org.apache.ratis.statemachine.impl.SingleFileSnapshotInfo;
+import org.apache.ratis.util.MD5FileUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -226,6 +228,8 @@ public class JournalStateMachine extends BaseStateMachine {
     final File snapshotFile = mStorage.getSnapshotFile(toBeInstalled.getTerm(), toBeInstalled.getIndex());
     LOG.info("Moving temp snapshot {} to file {}", tempFile, snapshotFile);
     try {
+      final MD5Hash digest = MD5FileUtil.computeMd5ForFile(tempFile);
+      MD5FileUtil.saveMD5File(snapshotFile, digest);
       tempFile.renameTo(snapshotFile);
     } catch (Exception e) {
       LOG.error("Failed to move temp snapshot {} to file {}", tempFile, snapshotFile, e);
@@ -238,6 +242,7 @@ public class JournalStateMachine extends BaseStateMachine {
       mStorage.loadLatestSnapshot();
     } catch (Exception e) {
       LOG.error("Failed loading snapshot file {}", snapshotFile, e);
+      snapshotFile.delete();
       mTermIndexToInstall.set(null);
       mSnapshotToInstall.set(null);
       return INVALID_SNAPSHOT;
@@ -457,21 +462,36 @@ public class JournalStateMachine extends BaseStateMachine {
       return INVALID_SNAPSHOT;
     }
     LOG.info("Taking a snapshot to file {}", tempFile);
+    final File snapshotFile = mStorage.getSnapshotFile(last.getTerm(), last.getIndex());
     try (FileOutputStream sws = new FileOutputStream(tempFile)) {
       buffer.putLong(0, snapshotId);
       sws.write(buffer.array());
       JournalUtils.writeToCheckpoint(sws, getStateMachines());
-      mStorage.loadLatestSnapshot();
     } catch (Exception e) {
       tempFile.delete();
       LOG.warn("Failed to take snapshot: {}", snapshotId, e);
       return INVALID_SNAPSHOT;
     }
-    final File snapshotFile = mStorage.getSnapshotFile(last.getTerm(), last.getIndex());
-    LOG.info("Renaming a snapshot file {} to {}", tempFile, snapshotFile);
-    tempFile.renameTo(snapshotFile);
-    LOG.info("Completed snapshot up to SN {} in {}ms", snapshotId,
-        System.currentTimeMillis() - mLastSnapshotStartTime);
+    try {
+      final MD5Hash digest = MD5FileUtil.computeMd5ForFile(tempFile);
+      LOG.info("Saving digest for snapshot file {}", snapshotFile);
+      MD5FileUtil.saveMD5File(snapshotFile, digest);
+      LOG.info("Renaming a snapshot file {} to {}", tempFile, snapshotFile);
+      tempFile.renameTo(snapshotFile);
+      LOG.info("Completed snapshot up to SN {} in {}ms", snapshotId,
+          System.currentTimeMillis() - mLastSnapshotStartTime);
+    } catch (Exception e) {
+      tempFile.delete();
+      LOG.warn("Failed to take snapshot: {}", snapshotId, e);
+      return INVALID_SNAPSHOT;
+    }
+    try {
+      mStorage.loadLatestSnapshot();
+    } catch (Exception e) {
+      snapshotFile.delete();
+      LOG.warn("Failed to take snapshot: {}", snapshotId, e);
+      return INVALID_SNAPSHOT;
+    }
     mSnapshotting = false;
     // maybeSendSnapshotToPrimaryMaster();
     return last.getIndex();
