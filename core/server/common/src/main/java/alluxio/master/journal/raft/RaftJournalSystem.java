@@ -336,10 +336,10 @@ public final class RaftJournalSystem extends AbstractJournalSystem {
     // RaftServerConfigKeys.Snapshot.setRetentionFileNum(properties, 2);
 
     // purge gap
-    RaftServerConfigKeys.Log.setPurgeGap(properties, 300);
+    // RaftServerConfigKeys.Log.setPurgeGap(properties, 300);
 
     // purge up to index
-    RaftServerConfigKeys.Log.setPurgeUptoSnapshotIndex(properties, true);
+    // RaftServerConfigKeys.Log.setPurgeUptoSnapshotIndex(properties, true);
 
     // snapshot interval
     RaftServerConfigKeys.Snapshot.setAutoTriggerEnabled(
