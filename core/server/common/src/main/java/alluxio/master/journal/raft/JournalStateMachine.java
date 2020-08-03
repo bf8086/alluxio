@@ -26,6 +26,7 @@ import alluxio.master.journal.JournalUtils;
 import alluxio.master.journal.Journaled;
 import alluxio.master.journal.sink.JournalSink;
 import alluxio.proto.journal.Journal.JournalEntry;
+import alluxio.util.CommonUtils;
 import alluxio.util.StreamUtils;
 import alluxio.util.logging.SamplingLogger;
 
@@ -69,9 +70,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.util.Collection;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -363,6 +366,8 @@ public class JournalStateMachine extends BaseStateMachine {
       if (!mJournalApplier.isSuspended()) {
         suspend();
       }
+      // workaround non-empty dir removal
+      mStorage.getSmDir().renameTo(new File(new File(mStorage.getSmDir().getParentFile(), "backup"), UUID.randomUUID().toString()));
     } catch (IOException e) {
       throw new IllegalStateException(e);
     }
