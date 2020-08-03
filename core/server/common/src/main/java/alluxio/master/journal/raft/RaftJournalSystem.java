@@ -33,6 +33,7 @@ import alluxio.proto.journal.Journal.JournalEntry;
 import alluxio.util.CommonUtils;
 import alluxio.util.WaitForOptions;
 import alluxio.util.io.FileUtils;
+import alluxio.util.logging.SamplingLogger;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
@@ -150,6 +151,7 @@ import javax.annotation.concurrent.ThreadSafe;
 @ThreadSafe
 public final class RaftJournalSystem extends AbstractJournalSystem {
   private static final Logger LOG = LoggerFactory.getLogger(RaftJournalSystem.class);
+  private static final Logger SAMPLING_LOG = new SamplingLogger(LOG, 30L * Constants.SECOND_MS);
 
   // Election timeout to use in a single master cluster.
   private static final long SINGLE_MASTER_ELECTION_TIMEOUT_MS = 500;
@@ -658,14 +660,14 @@ public final class RaftJournalSystem extends AbstractJournalSystem {
       }
       long lastAppliedSN = stateMachine.getLastAppliedSequenceNumber();
       long gainPrimacySN = ThreadLocalRandom.current().nextLong(Long.MIN_VALUE, 0);
-      LOG.info("Performing catchup. Last applied SN: {}. Catchup ID: {}",
+      SAMPLING_LOG.info("Performing catchup. Last applied SN: {}. Catchup ID: {}",
           lastAppliedSN, gainPrimacySN);
       CompletableFuture<RaftClientReply> future = client.sendAsync(
           toRaftMessage(JournalEntry.newBuilder().setSequenceNumber(gainPrimacySN).build()));
       try {
         future.get(5, TimeUnit.SECONDS);
       } catch (TimeoutException | ExecutionException e) {
-        LOG.info("Exception submitting term start entry: {}", e.toString());
+        SAMPLING_LOG.info("Exception submitting term start entry: {}", e.toString());
         continue;
       }
 
