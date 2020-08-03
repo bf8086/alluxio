@@ -54,6 +54,7 @@ import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.statemachine.impl.BaseStateMachine;
 import org.apache.ratis.statemachine.impl.SimpleStateMachineStorage;
 import org.apache.ratis.statemachine.impl.SingleFileSnapshotInfo;
+import org.apache.ratis.util.LifeCycle;
 import org.apache.ratis.util.MD5FileUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -167,6 +168,9 @@ public class JournalStateMachine extends BaseStateMachine {
   public void reinitialize() throws IOException {
     // load snapshot
     loadSnapshot(mStorage.getLatestSnapshot());
+    if (mJournalApplier.isSuspended()) {
+      resume();
+    }
   }
 
   private long loadSnapshot(SingleFileSnapshotInfo snapshot) throws IOException {
@@ -350,6 +354,39 @@ public class JournalStateMachine extends BaseStateMachine {
   public void notifyNotLeader(Collection<TransactionContext> pendingEntries) {
     mJournalSystem.setIsLeader(false);
     mSnapshotCache.clear();
+  }
+
+  @Override
+  public void pause() {
+    getLifeCycle().transition(LifeCycle.State.PAUSING);
+    try {
+      if (!mJournalApplier.isSuspended()) {
+        suspend();
+      }
+    } catch (IOException e) {
+      throw new IllegalStateException(e);
+    }
+    getLifeCycle().transition(LifeCycle.State.PAUSED);
+  }
+
+  /**
+   * Unpause the StateMachine, re-initialize the DoubleBuffer and update the
+   * lastAppliedIndex. This should be done after uploading new state to the
+   * StateMachine.
+   */
+  public void unpause(long newLastAppliedSnaphsotIndex,
+      long newLastAppliedSnapShotTermIndex) {
+    getLifeCycle().startAndTransition(() -> {
+      this.setLastAppliedTermIndex(TermIndex.newTermIndex(
+          newLastAppliedSnapShotTermIndex, newLastAppliedSnaphsotIndex));
+      try {
+        if (mJournalApplier.isSuspended()) {
+          resume();
+        }
+      } catch (IOException e) {
+        throw new IllegalStateException(e);
+      }
+    });
   }
 
   private static <T> CompletableFuture<T> completeExceptionally(Exception e) {
