@@ -171,6 +171,8 @@ public class JournalStateMachine extends BaseStateMachine {
   @Override
   public void reinitialize() throws IOException {
     // load snapshot
+    LOG.info("Reinitializing Statemachine.");
+    mStorage.loadLatestSnapshot();
     loadSnapshot(mStorage.getLatestSnapshot());
     if (mJournalApplier.isSuspended()) {
       resume();
@@ -182,6 +184,7 @@ public class JournalStateMachine extends BaseStateMachine {
       LOG.warn("The snapshot info is null.");
       return RaftServerConstants.INVALID_LOG_INDEX;
     }
+    LOG.info("loading Snapshot {}.", snapshot);
     final File snapshotFile = snapshot.getFile().getPath().toFile();
     if (!snapshotFile.exists()) {
       LOG.warn("The snapshot file {} does not exist for snapshot {}", snapshotFile, snapshot);
@@ -194,6 +197,9 @@ public class JournalStateMachine extends BaseStateMachine {
       resetState();
       setLastAppliedTermIndex(last);
       install(in);
+    } catch (Exception e) {
+      LOG.warn("Failed to load snapshot {}", snapshot, e);
+      throw e;
     }
     return last.getIndex();
   }
