@@ -26,7 +26,6 @@ import alluxio.master.journal.JournalUtils;
 import alluxio.master.journal.Journaled;
 import alluxio.master.journal.sink.JournalSink;
 import alluxio.proto.journal.Journal.JournalEntry;
-import alluxio.util.CommonUtils;
 import alluxio.util.StreamUtils;
 import alluxio.util.logging.SamplingLogger;
 
@@ -69,6 +68,8 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.Date;
 import java.util.List;
@@ -367,8 +368,15 @@ public class JournalStateMachine extends BaseStateMachine {
         suspend();
       }
       // workaround non-empty dir removal
-      mStorage.getSmDir().renameTo(new File(new File(mStorage.getSmDir().getParentFile(), "backup"), UUID.randomUUID().toString()));
+      File backupDir = new File(mStorage.getSmDir().getParentFile(), "sm-backup-" + Instant.now().toString() + UUID.randomUUID().toString());
+      LOG.info("statemachine pausing: renaming current states from {} to {}", mStorage.getSmDir(), backupDir);
+      if (!mStorage.getSmDir().renameTo(backupDir)) {
+        LOG.warn("statemachine dir rename failed");
+        Files.move(mStorage.getSmDir().toPath(), backupDir.toPath());
+      }
+      LOG.info("statemachine paused: successfully renamed current states from {} to {}", mStorage.getSmDir(), backupDir);
     } catch (IOException e) {
+      LOG.warn("statemachine pause failed", e);
       throw new IllegalStateException(e);
     }
     getLifeCycle().transition(LifeCycle.State.PAUSED);
