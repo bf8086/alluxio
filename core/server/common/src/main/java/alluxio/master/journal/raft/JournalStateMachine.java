@@ -174,9 +174,7 @@ public class JournalStateMachine extends BaseStateMachine {
     LOG.info("Reinitializing Statemachine.");
     mStorage.loadLatestSnapshot();
     loadSnapshot(mStorage.getLatestSnapshot());
-    if (mJournalApplier.isSuspended()) {
-      resume();
-    }
+    unpause();
   }
 
   private long loadSnapshot(SingleFileSnapshotInfo snapshot) throws IOException {
@@ -393,11 +391,8 @@ public class JournalStateMachine extends BaseStateMachine {
    * lastAppliedIndex. This should be done after uploading new state to the
    * StateMachine.
    */
-  public void unpause(long newLastAppliedSnaphsotIndex,
-      long newLastAppliedSnapShotTermIndex) {
+  public void unpause() {
     getLifeCycle().startAndTransition(() -> {
-      this.setLastAppliedTermIndex(TermIndex.newTermIndex(
-          newLastAppliedSnapShotTermIndex, newLastAppliedSnaphsotIndex));
       try {
         if (mJournalApplier.isSuspended()) {
           resume();
