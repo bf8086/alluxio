@@ -35,6 +35,8 @@ import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftGroupMemberId;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
+import org.apache.ratis.server.impl.RaftServerProxy;
+import org.apache.ratis.server.impl.ServerState;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.server.storage.RaftStorage;
@@ -104,6 +106,8 @@ public class JournalStateMachine extends BaseStateMachine {
   private BufferedJournalApplier mJournalApplier;
   private final SimpleStateMachineStorage mStorage = new SimpleStateMachineStorage();
   private RaftGroupId mRaftGroupId;
+  private RaftServerProxy mProxy;
+  private RaftLog mLog;
 
   /**
    * @param journals      master journals; these journals are still owned by the caller, not by the
@@ -126,6 +130,7 @@ public class JournalStateMachine extends BaseStateMachine {
     getLifeCycle().startAndTransition(() -> {
       super.initialize(server, groupId, raftStorage);
       mRaftGroupId = groupId;
+      mProxy = (RaftServerProxy) server;
       mStorage.init(raftStorage);
       loadSnapshot(mStorage.getLatestSnapshot());
     });
@@ -243,7 +248,22 @@ public class JournalStateMachine extends BaseStateMachine {
               "Server should be a follower when installing a snapshot from leader. Actual: %s",
               roleInfoProto.getRole())));
     }
-    return mSnapshotManager.installSnapshotFromLeader();
+    return mSnapshotManager.installSnapshotFromLeader().thenApply(termIndex -> {
+      ServerState serverState;
+      try {
+        serverState = mProxy.getImpl(getGroupId()).getState();
+      } catch (IOException e) {
+        throw new CompletionException(e);
+      }
+      mLog = serverState.getLog();
+      TermIndex lastTermIndex = mLog.getLastEntryTermIndex();
+      if (lastTermIndex != null && lastTermIndex.getIndex() >= termIndex.getIndex()) {
+        LOG.warn("Installed a snapshot {} older than latest commit {}, skip reloading",
+            termIndex, lastTermIndex);
+        return null;
+      }
+      return termIndex;
+    });
   }
 
   @Override
