@@ -32,6 +32,7 @@ import alluxio.master.journal.CatchupFuture;
 import alluxio.master.journal.Journal;
 import alluxio.proto.journal.Journal.JournalEntry;
 import alluxio.util.CommonUtils;
+import alluxio.util.LogUtils;
 import alluxio.util.WaitForOptions;
 import alluxio.util.io.FileUtils;
 
@@ -88,6 +89,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -157,6 +159,8 @@ public class RaftJournalSystem extends AbstractJournalSystem {
   /// Lifecycle: constant from when the journal system is constructed.
 
   private final RaftJournalConfiguration mConf;
+  /** Controls whether Copycat will attempt to take snapshots. */
+  private final AtomicBoolean mSnapshotAllowed;
 
   /**
    * Listens to the Ratis server to detect gaining or losing primacy. The lifecycle for this
@@ -169,7 +173,6 @@ public class RaftJournalSystem extends AbstractJournalSystem {
 
   /** Contains all journals created by this journal system. */
   private final ConcurrentHashMap<String, RaftJournal> mJournals;
-
   /// Lifecycle: created at startup and re-created when master loses primacy and resets.
 
   /**
@@ -210,6 +213,7 @@ public class RaftJournalSystem extends AbstractJournalSystem {
   private RaftJournalSystem(RaftJournalConfiguration conf) {
     mConf = processRaftConfiguration(conf);
     mJournals = new ConcurrentHashMap<>();
+    mSnapshotAllowed = new AtomicBoolean(true);
     mPrimarySelector = new RaftPrimarySelector();
     mAsyncJournalWriter = new AtomicReference<>();
   }
@@ -329,7 +333,7 @@ public class RaftJournalSystem extends AbstractJournalSystem {
     RetryPolicy retryPolicy = ExponentialBackoffRetry.newBuilder()
         .setBaseSleepTime(TimeDuration.valueOf(100, TimeUnit.MILLISECONDS))
         .setMaxAttempts(10)
-        .setMaxSleepTime(TimeDuration.ONE_SECOND)
+        .setMaxSleepTime(TimeDuration.valueOf(mConf.getElectionTimeoutMs(), TimeUnit.MILLISECONDS))
         .build();
     return RaftClient.newBuilder()
         .setRaftGroup(mRaftGroup)
@@ -349,6 +353,7 @@ public class RaftJournalSystem extends AbstractJournalSystem {
 
   @Override
   public synchronized void gainPrimacy() {
+    mSnapshotAllowed.set(false);
     RaftClient client = createClient();
     Runnable closeClient = () -> {
       try {
@@ -402,6 +407,7 @@ public class RaftJournalSystem extends AbstractJournalSystem {
     }
     LOG.info("Shut down Raft server");
     try {
+      mSnapshotAllowed.set(true);
       initServer();
     } catch (IOException e) {
       LOG.error("Fatal error: failed to init Raft cluster with addresses {} while stepping down",
@@ -433,12 +439,14 @@ public class RaftJournalSystem extends AbstractJournalSystem {
 
   @Override
   public synchronized void suspend() throws IOException {
+    mSnapshotAllowed.set(false);
     mStateMachine.suspend();
   }
 
   @Override
   public synchronized void resume() throws IOException {
     mStateMachine.resume();
+    mSnapshotAllowed.set(true);
   }
 
   @Override
@@ -460,6 +468,7 @@ public class RaftJournalSystem extends AbstractJournalSystem {
     // TODO(feng): consider removing this once we can automatically propagate
     //             snapshots from secondary master
     try (RaftClient client = createClient()) {
+      mSnapshotAllowed.set(true);
       catchUp(mStateMachine, client);
       mStateMachine.takeLocalSnapshot();
       // TODO(feng): maybe prune logs after snapshot
@@ -470,6 +479,8 @@ public class RaftJournalSystem extends AbstractJournalSystem {
       LOG.warn("Interrupted while performing snapshot: {}", e.toString());
       Thread.currentThread().interrupt();
       throw new CancelledException("Interrupted while performing snapshot", e);
+    } finally {
+      mSnapshotAllowed.set(false);
     }
   }
 
@@ -519,6 +530,7 @@ public class RaftJournalSystem extends AbstractJournalSystem {
       try {
         future.get(5, TimeUnit.SECONDS);
       } catch (TimeoutException | ExecutionException e) {
+        client.getClientRpc().handleException(mPeerId, e, false);
         LOG.info("Exception submitting term start entry: {}", e.toString());
         continue;
       }
@@ -587,15 +599,16 @@ public class RaftJournalSystem extends AbstractJournalSystem {
                 .build().toByteArray()
         ))).whenComplete((reply, t) -> {
           if (t != null) {
-            LOG.error("Exception occurred while joining quorum", t);
+            LogUtils.warnWithException(LOG, "Exception occurred while joining quorum", t);
           }
           if (reply != null && reply.getException() != null) {
-            LOG.error("Received an error while joining quorum", reply.getException());
+            LogUtils.warnWithException(LOG,
+                "Received an error while joining quorum", reply.getException());
           }
           try {
             client.close();
           } catch (IOException e) {
-            LOG.error("Exception occurred closing raft client", e);
+            LogUtils.warnWithException(LOG, "Exception occurred closing raft client", e);
           }
         });
   }
@@ -768,6 +781,13 @@ public class RaftJournalSystem extends AbstractJournalSystem {
    */
   public PrimarySelector getPrimarySelector() {
     return mPrimarySelector;
+  }
+
+  /**
+   * @return whether it is allowed to take a local shapshot
+   */
+  public boolean isSnapshotAllowed() {
+    return mSnapshotAllowed.get();
   }
 
   /**
