@@ -355,29 +355,18 @@ public class RaftJournalSystem extends AbstractJournalSystem {
   @Override
   public synchronized void gainPrimacy() {
     mSnapshotAllowed.set(false);
-    RaftClient client = createClient();
-    Runnable closeClient = () -> {
-      try {
-        client.close();
-      } catch (IOException e) {
-        LOG.warn("Failed to close raft client: {}", e.toString());
-      }
-    };
-
-    try {
+    try (RaftClient client = createClient()) {
       catchUp(mStateMachine, client);
-    } catch (TimeoutException e) {
-      closeClient.run();
+    } catch (IOException | TimeoutException e) {
       throw new RuntimeException(e);
     } catch (InterruptedException e) {
-      closeClient.run();
       Thread.currentThread().interrupt();
       throw new RuntimeException(e);
     }
     long nextSN = mStateMachine.upgrade() + 1;
 
     Preconditions.checkState(mRaftJournalWriter == null);
-    mRaftJournalWriter = new RaftJournalWriter(nextSN, client);
+    mRaftJournalWriter = new RaftJournalWriter(nextSN, this::createClient);
     mAsyncJournalWriter
         .set(new AsyncJournalWriter(mRaftJournalWriter, () -> getJournalSinks(null)));
   }

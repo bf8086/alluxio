@@ -18,7 +18,9 @@ import alluxio.master.journal.JournalWriter;
 import alluxio.proto.journal.Journal.JournalEntry;
 
 import com.google.common.base.Preconditions;
+import com.google.common.base.Supplier;
 import org.apache.ratis.client.RaftClient;
+import org.apache.ratis.protocol.AlreadyClosedException;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,21 +47,23 @@ public class RaftJournalWriter implements JournalWriter {
   private final AtomicLong mLastSubmittedSequenceNumber;
   private final AtomicLong mLastCommittedSequenceNumber;
 
-  private final RaftClient mClient;
+  private final Supplier<RaftClient> mClientSupplier;
+  private volatile RaftClient mClient;
 
   private volatile boolean mClosed;
   private JournalEntry.Builder mJournalEntryBuilder;
 
   /**
    * @param nextSequenceNumberToWrite the sequence number for the writer to begin writing at
-   * @param client client for writing entries to the journal; the constructed journal writer owns
+   * @param clientSupplier client for writing entries to the journal; the constructed journal writer owns
    *               this client and is responsible for closing it
    */
-  public RaftJournalWriter(long nextSequenceNumberToWrite, RaftClient client) {
+  public RaftJournalWriter(long nextSequenceNumberToWrite, Supplier<RaftClient> clientSupplier) {
     mNextSequenceNumberToWrite = new AtomicLong(nextSequenceNumberToWrite);
     mLastSubmittedSequenceNumber = new AtomicLong(-1);
     mLastCommittedSequenceNumber = new AtomicLong(-1);
-    mClient = client;
+    mClientSupplier = clientSupplier;
+    mClient = clientSupplier.get();
     mClosed = false;
     mWriteTimeoutMs =
         ServerConfiguration.getMs(PropertyKey.MASTER_EMBEDDED_JOURNAL_WRITE_TIMEOUT);
@@ -102,6 +106,10 @@ public class RaftJournalWriter implements JournalWriter {
         Thread.currentThread().interrupt();
         throw new IOException(e);
       } catch (ExecutionException e) {
+        if (e.getCause() instanceof AlreadyClosedException) {
+          mClient.close();
+          mClient = mClientSupplier.get();
+        }
         throw new IOException(e.getCause());
       } catch (TimeoutException e) {
         throw new IOException(String.format(
