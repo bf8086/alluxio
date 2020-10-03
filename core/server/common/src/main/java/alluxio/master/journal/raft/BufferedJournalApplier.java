@@ -228,7 +228,7 @@ public class BufferedJournalApplier {
   /**
    * Resets the suspend applier. Should only be used when the state machine is reset.
    */
-  public void reset() {
+  public void close() {
     try (LockResource stateLock = new LockResource(mStateLock)) {
       cancelCatchup();
       mSuspendBuffer.clear();

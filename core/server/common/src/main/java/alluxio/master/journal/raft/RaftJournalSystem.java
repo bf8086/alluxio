@@ -35,6 +35,7 @@ import alluxio.util.CommonUtils;
 import alluxio.util.LogUtils;
 import alluxio.util.WaitForOptions;
 import alluxio.util.io.FileUtils;
+import alluxio.util.logging.SamplingLogger;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
@@ -156,7 +157,7 @@ public class RaftJournalSystem extends AbstractJournalSystem {
       UUID.fromString("02511d47-d67c-49a3-9011-abb3109a44c1");
 
   private static final Logger LOG = LoggerFactory.getLogger(RaftJournalSystem.class);
-
+  private static final Logger SAMPLING_LOG = new SamplingLogger(LOG, 10L * Constants.SECOND_MS);
   private static final AtomicLong CALL_ID_COUNTER = new AtomicLong();
   // Election timeout to use in a single master cluster.
   private static final long SINGLE_MASTER_ELECTION_TIMEOUT_MS = 500;
@@ -400,27 +401,31 @@ public class RaftJournalSystem extends AbstractJournalSystem {
       mClientId = clientId;
     }
 
-    public CompletableFuture<RaftClientReply> sendRequestAsync(Message message) throws IOException {
+    public CompletableFuture<RaftClientReply> sendRequestAsync(Message message,
+        TimeDuration timeout) throws IOException {
       if (mClient == null) {
-        return sendLocalRequest(message);
+        return sendLocalRequest(message, timeout);
       } else {
         return sendRemoteRequest(message);
       }
     }
 
-    private CompletableFuture<RaftClientReply> sendLocalRequest(Message message)
-        throws IOException {
+    private CompletableFuture<RaftClientReply> sendLocalRequest(Message message,
+        TimeDuration timeout) throws IOException {
+      SAMPLING_LOG.info("Sending local request");
       return mServer.submitClientRequestAsync(
           new RaftClientRequest(mClientId, null, RAFT_GROUP_ID, nextCallId(), message,
               RaftClientRequest.writeRequestType(), null))
-          .thenApply(reply -> handleLocalException(message, reply));
+          .thenApply(reply -> handleLocalException(message, reply, timeout));
     }
 
-    private RaftClientReply handleLocalException(Message message, RaftClientReply reply) {
+    private RaftClientReply handleLocalException(Message message, RaftClientReply reply,
+        TimeDuration timeout) {
       if (reply.getException() != null) {
         if (reply.getException() instanceof NotLeaderException) {
+          LOG.warn("no longer a leader, use remote client");
           try {
-            return sendRemoteRequest(message).get(5, TimeUnit.SECONDS);
+            return sendRemoteRequest(message).get(timeout.getDuration(), timeout.getUnit());
           } catch (InterruptedException | TimeoutException e) {
             throw new CompletionException(e);
           } catch (ExecutionException e) {
@@ -433,6 +438,7 @@ public class RaftJournalSystem extends AbstractJournalSystem {
     }
 
     private CompletableFuture<RaftClientReply> sendRemoteRequest(Message message) {
+      SAMPLING_LOG.info("Sending remote request");
       ensureClient();
       return mClient.sendAsync(message).exceptionally(t -> {
         if (t instanceof ExecutionException && t.getCause() instanceof AlreadyClosedException) {
@@ -519,20 +525,13 @@ public class RaftJournalSystem extends AbstractJournalSystem {
   @Override
   public synchronized void suspend() throws IOException {
     mSnapshotAllowed.set(false);
-    if (!mStateMachine.suspend()) {
-      throw new IOException("Failed to suspend the state machine");
-    }
+    mStateMachine.suspend();
   }
 
   @Override
   public synchronized void resume() throws IOException {
-    try {
-      if (!mStateMachine.resume()) {
-        throw new IllegalStateException("Failed to resume the state machine");
-      }
-    } finally {
-      mSnapshotAllowed.set(true);
-    }
+    mStateMachine.resume();
+    mSnapshotAllowed.set(true);
   }
 
   @Override
@@ -614,7 +613,8 @@ public class RaftJournalSystem extends AbstractJournalSystem {
           lastAppliedSN, gainPrimacySN);
       try {
         CompletableFuture<RaftClientReply> future = client.sendRequestAsync(
-            toRaftMessage(JournalEntry.newBuilder().setSequenceNumber(gainPrimacySN).build()));
+            toRaftMessage(JournalEntry.newBuilder().setSequenceNumber(gainPrimacySN).build()),
+            TimeDuration.valueOf(5, TimeUnit.SECONDS));
         RaftClientReply reply = future.get(5, TimeUnit.SECONDS);
         if (reply.getException() != null) {
           LOG.info("Exception sending term start entry: {}", reply.getException());

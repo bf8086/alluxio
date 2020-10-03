@@ -21,6 +21,7 @@ import alluxio.proto.journal.Journal.JournalEntry;
 import com.google.common.base.Preconditions;
 import org.apache.ratis.protocol.Message;
 import org.apache.ratis.protocol.RaftClientReply;
+import org.apache.ratis.util.TimeDuration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -96,7 +97,8 @@ public class RaftJournalWriter implements JournalWriter {
         // LOG.info("{} - Sending request {}", this, entry);
         Message message = RaftJournalSystem.toRaftMessage(entry);
         mLastSubmittedSequenceNumber.set(flushSN);
-        RaftClientReply reply = mClient.sendRequestAsync(message)
+        RaftClientReply reply = mClient
+            .sendRequestAsync(message, TimeDuration.valueOf(mWriteTimeoutMs, TimeUnit.MILLISECONDS))
             .get(mWriteTimeoutMs, TimeUnit.MILLISECONDS);
         mLastCommittedSequenceNumber.set(flushSN);
         if (reply.getException() != null) {
