@@ -35,6 +35,7 @@ import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftGroupMemberId;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
+import org.apache.ratis.server.impl.RaftServerProxy;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.server.storage.RaftStorage;
@@ -61,7 +62,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
@@ -237,6 +237,13 @@ public class JournalStateMachine extends BaseStateMachine {
     mJournalSystem.notifyLeadershipStateChanged(false);
   }
 
+  private long getNextIndex() {
+    try {
+      return ((RaftServerProxy) mServer).getImpl(mRaftGroupId).getState().getNextIndex();
+    } catch (IOException e) {
+      throw new IllegalStateException("Cannot obtain raft log index", e);
+    }
+  }
   @Override
   public CompletableFuture<TermIndex> notifyInstallSnapshotFromLeader(
       RaftProtos.RoleInfoProto roleInfoProto, TermIndex firstTermIndexInLog) {
@@ -246,7 +253,24 @@ public class JournalStateMachine extends BaseStateMachine {
               "Server should be a follower when installing a snapshot from leader. Actual: %s",
               roleInfoProto.getRole())));
     }
-    return mSnapshotManager.installSnapshotFromLeader();
+    long nextIndex = getNextIndex();
+    if (nextIndex >= firstTermIndexInLog.getIndex()) {
+      // bail out if the local server can catch up with leader without installing a snapshot
+      return RaftJournalUtils.completeExceptionally(new IllegalArgumentException(
+          String.format("Received outdated install snapshot notification:"
+                  + " next entry index to append is %d, first log entry index in leader is %d",
+              nextIndex, firstTermIndexInLog.getIndex())));
+    }
+    return mSnapshotManager.installSnapshotFromLeader().thenApply(snapshotIndex -> {
+      long latestJournalIndex = getNextIndex() - 1;
+      if (latestJournalIndex >= snapshotIndex.getIndex()) {
+        // do not reload the state machine if the downloaded snapshot is older than the latest entry
+        throw new IllegalArgumentException(
+            String.format("Downloaded snapshot index %d is older than the latest entry index %d",
+                getNextIndex(), firstTermIndexInLog.getIndex()));
+      }
+      return snapshotIndex;
+    });
   }
 
   @Override
