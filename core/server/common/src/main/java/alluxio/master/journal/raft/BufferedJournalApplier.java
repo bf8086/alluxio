@@ -150,11 +150,7 @@ public class BufferedJournalApplier {
       LOG.info("Resuming state machine from sequence: {}", mLastAppliedSequence);
     }
 
-    // Cancel catching up thread if active.
-    if (mCatchupThread != null && mCatchupThread.isAlive()) {
-      mCatchupThread.cancel();
-      mCatchupThread.waitTermination();
-    }
+    cancelCatchup();
 
     /**
      * Applies all buffered entries.
@@ -191,6 +187,14 @@ public class BufferedJournalApplier {
     }
   }
 
+  private void cancelCatchup() {
+    // Cancel catching up thread if active.
+    if (mCatchupThread != null && mCatchupThread.isAlive()) {
+      mCatchupThread.cancel();
+      mCatchupThread.waitTermination();
+    }
+  }
+
   /**
    * Initiates catching up of the applier to a target sequence.
    * This method leaves the applier in suspended state.
@@ -218,6 +222,16 @@ public class BufferedJournalApplier {
       mCatchupThread = new RaftJournalCatchupThread(sequence);
       mCatchupThread.start();
       return new CatchupFuture(mCatchupThread);
+    }
+  }
+
+  /**
+   * Resets the suspend applier. Should only be used when the state machine is reset.
+   */
+  public void reset() {
+    try (LockResource stateLock = new LockResource(mStateLock)) {
+      cancelCatchup();
+      mSuspendBuffer.clear();
     }
   }
 

@@ -22,6 +22,7 @@ import alluxio.master.journal.JournalUtils;
 import alluxio.master.journal.Journaled;
 import alluxio.master.journal.checkpoint.CheckpointInputStream;
 import alluxio.proto.journal.Journal.JournalEntry;
+import alluxio.util.CommonUtils;
 import alluxio.util.LogUtils;
 import alluxio.util.StreamUtils;
 import alluxio.util.logging.SamplingLogger;
@@ -61,6 +62,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
@@ -105,6 +108,7 @@ public class JournalStateMachine extends BaseStateMachine {
   private final SimpleStateMachineStorage mStorage = new SimpleStateMachineStorage();
   private RaftGroupId mRaftGroupId;
   private RaftServer mServer;
+  private final AtomicBoolean mSuspended = new AtomicBoolean(false);
 
   /**
    * @param journals      master journals; these journals are still owned by the caller, not by the
@@ -252,11 +256,18 @@ public class JournalStateMachine extends BaseStateMachine {
   public void pause() {
     getLifeCycle().transition(LifeCycle.State.PAUSING);
     try {
-      if (!mJournalApplier.isSuspended()) {
-        suspend();
-      }
-    } catch (IOException e) {
-      throw new IllegalStateException("State machine pause failed", e);
+      CommonUtils.waitFor("journal to be resumed", () -> {
+        try {
+          return suspend();
+        } catch (IOException e) {
+          throw new IllegalStateException("State machine pause failed", e);
+        }
+      });
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new RuntimeException(e);
+    } catch (TimeoutException e) {
+      throw new RuntimeException(e);
     }
     getLifeCycle().transition(LifeCycle.State.PAUSED);
   }
@@ -468,8 +479,12 @@ public class JournalStateMachine extends BaseStateMachine {
    *
    * @throws IOException
    */
-  public void suspend() throws IOException {
-    mJournalApplier.suspend();
+  public boolean suspend() throws IOException {
+    if (mSuspended.compareAndSet(false, true)) {
+      mJournalApplier.suspend();
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -477,8 +492,12 @@ public class JournalStateMachine extends BaseStateMachine {
    *
    * @throws IOException
    */
-  public void resume() throws IOException {
-    mJournalApplier.resume();
+  public boolean resume() throws IOException {
+    if (mSuspended.compareAndSet(true, false)) {
+      mJournalApplier.resume();
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -503,6 +522,7 @@ public class JournalStateMachine extends BaseStateMachine {
       LOG.warn("Unexpected call to resetState() on a read-only journal state machine");
       return;
     }
+    mJournalApplier.reset();
     for (RaftJournal journal : mJournals.values()) {
       journal.getStateMachine().resetState();
     }

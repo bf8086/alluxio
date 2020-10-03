@@ -519,13 +519,20 @@ public class RaftJournalSystem extends AbstractJournalSystem {
   @Override
   public synchronized void suspend() throws IOException {
     mSnapshotAllowed.set(false);
-    mStateMachine.suspend();
+    if (!mStateMachine.suspend()) {
+      throw new IOException("Failed to suspend the state machine");
+    }
   }
 
   @Override
   public synchronized void resume() throws IOException {
-    mStateMachine.resume();
-    mSnapshotAllowed.set(true);
+    try {
+      if (!mStateMachine.resume()) {
+        throw new IllegalStateException("Failed to resume the state machine");
+      }
+    } finally {
+      mSnapshotAllowed.set(true);
+    }
   }
 
   @Override
