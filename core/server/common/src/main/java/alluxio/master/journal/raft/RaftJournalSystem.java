@@ -611,17 +611,19 @@ public class RaftJournalSystem extends AbstractJournalSystem {
       long gainPrimacySN = ThreadLocalRandom.current().nextLong(Long.MIN_VALUE, 0);
       LOG.info("Performing catchup. Last applied SN: {}. Catchup ID: {}",
           lastAppliedSN, gainPrimacySN);
+      Exception ex;
       try {
         CompletableFuture<RaftClientReply> future = client.sendRequestAsync(
             toRaftMessage(JournalEntry.newBuilder().setSequenceNumber(gainPrimacySN).build()),
             TimeDuration.valueOf(5, TimeUnit.SECONDS));
         RaftClientReply reply = future.get(5, TimeUnit.SECONDS);
-        if (reply.getException() != null) {
-          LOG.info("Exception sending term start entry: {}", reply.getException());
-          continue;
-        }
+        ex = reply.getException();
       } catch (TimeoutException | ExecutionException | IOException e) {
-        LOG.info("Exception submitting term start entry: {}", e.toString());
+        ex = e;
+      }
+      if (ex != null) {
+        LOG.info("Exception submitting term start entry: {}", ex.toString());
+        Thread.sleep(100);
         continue;
       }
 

@@ -253,18 +253,11 @@ public class JournalStateMachine extends BaseStateMachine {
               "Server should be a follower when installing a snapshot from leader. Actual: %s",
               roleInfoProto.getRole())));
     }
-    long nextIndex = getNextIndex();
-    if (nextIndex >= firstTermIndexInLog.getIndex()) {
-      // bail out if the local server can catch up with leader without installing a snapshot
-      return RaftJournalUtils.completeExceptionally(new IllegalArgumentException(
-          String.format("Received outdated install snapshot notification:"
-                  + " next entry index to append is %d, first log entry index in leader is %d",
-              nextIndex, firstTermIndexInLog.getIndex())));
-    }
     return mSnapshotManager.installSnapshotFromLeader().thenApply(snapshotIndex -> {
       long latestJournalIndex = getNextIndex() - 1;
       if (latestJournalIndex >= snapshotIndex.getIndex()) {
         // do not reload the state machine if the downloaded snapshot is older than the latest entry
+        // do it after installation so the leader will stop sending the same request
         throw new IllegalArgumentException(
             String.format("Downloaded snapshot index %d is older than the latest entry index %d",
                 getNextIndex(), firstTermIndexInLog.getIndex()));
