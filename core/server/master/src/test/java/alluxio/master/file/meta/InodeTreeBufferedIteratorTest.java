@@ -70,6 +70,27 @@ public class InodeTreeBufferedIteratorTest {
   }
 
   @Test
+  public void cleanupOnInterruption() throws InterruptedException {
+    MutableInode<?> rootInode =
+        MutableInodeDirectory.create(0, -1, "root", CreateDirectoryContext.defaults());
+    mInodeStore.writeInode(rootInode);
+    for (int i = 0; i < 50000; i++) {
+      MutableInode<?> inode =
+          MutableInodeDirectory.create(i + 1, 0, "test" + i, CreateDirectoryContext.defaults());
+      mInodeStore.writeNewInode(inode);
+      mInodeStore.addChild(inode.getParentId(), inode);
+    }
+    InodeTreeBufferedIterator iterator =
+        new InodeTreeBufferedIterator(mInodeStore, InodeDirectory.wrap(rootInode).asDirectory());
+
+    for (int i = 0; i < 20000; i++) {
+      iterator.next();
+    }
+    iterator.close();
+    Thread.sleep(1000);
+  }
+
+  @Test
   public void bufferingFailure() {
     final int creationTimeoutMs = 1000;
     // How many dirs under root.

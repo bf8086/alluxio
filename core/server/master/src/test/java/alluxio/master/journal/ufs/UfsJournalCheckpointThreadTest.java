@@ -16,6 +16,7 @@ import alluxio.conf.ServerConfiguration;
 import alluxio.master.MockMaster;
 import alluxio.master.NoopMaster;
 import alluxio.proto.journal.Journal;
+import alluxio.resource.CloseableIterator;
 import alluxio.underfs.UnderFileSystem;
 import alluxio.util.CommonUtils;
 import alluxio.util.URIUtils;
@@ -109,8 +110,8 @@ public final class UfsJournalCheckpointThreadTest {
 
     // Make sure all the journal entries have been processed. Note that it is not necessary that
     // the they are checkpointed.
-    Iterator<Journal.JournalEntry> it = mockMaster.getJournalEntryIterator();
-    Assert.assertEquals(10, Iterators.size(it));
+    CloseableIterator<Journal.JournalEntry> it = mockMaster.getJournalEntryIterator();
+    Assert.assertEquals(10, Iterators.size(it.get()));
   }
 
   /**

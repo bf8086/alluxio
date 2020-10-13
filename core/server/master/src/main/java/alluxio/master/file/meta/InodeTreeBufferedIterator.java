@@ -20,6 +20,8 @@ import alluxio.util.ThreadFactoryUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.Closeable;
+import java.io.IOException;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -44,12 +46,13 @@ import java.util.concurrent.atomic.AtomicReference;
  * makes applying those entries later more efficient by guaranteeing that a parent of an inode is
  * iterated before it.
  */
-public class InodeTreeBufferedIterator implements Iterator<Journal.JournalEntry> {
+public class InodeTreeBufferedIterator implements Iterator<Journal.JournalEntry>, Closeable {
   private static final Logger LOG = LoggerFactory.getLogger(InodeTreeBufferedIterator.class);
 
   // Used to signal end of iteration.
   private static final long TERMINATION_SEQ = -1;
   private static final long FAILURE_SEQ = -2;
+  private final ExecutorService mThreadPool;
   /** Underlying inode store. */
   InodeStore mInodeStore;
   /** Root inode for enumeration. */
@@ -89,9 +92,10 @@ public class InodeTreeBufferedIterator implements Iterator<Journal.JournalEntry>
     // Create executors.
     mCoordinatorExecutor = Executors.newSingleThreadExecutor(
         ThreadFactoryUtils.build("inode-tree-crawler-coordinator-%d", true));
+    mThreadPool = Executors.newFixedThreadPool(iteratorThreadCount,
+        ThreadFactoryUtils.build("inode-tree-crawler-%d", true));
     mCrawlerCompletionService =
-        new ExecutorCompletionService(Executors.newFixedThreadPool(iteratorThreadCount,
-            ThreadFactoryUtils.build("inode-tree-crawler-%d", true)));
+        new ExecutorCompletionService(mThreadPool);
     // Used to keep futures of active crawlers.
     mActiveCrawlers = new HashSet<>();
 
@@ -266,6 +270,7 @@ public class InodeTreeBufferedIterator implements Iterator<Journal.JournalEntry>
           return mNextElements.size() > 0;
         }
       } catch (InterruptedException ie) {
+        mActiveCrawlers.forEach((future) -> future.cancel(true));
         // Continue interrupt chain.
         Thread.currentThread().interrupt();
         throw new RuntimeException("Thread interrupted while taking an entry from buffer.");
@@ -301,5 +306,12 @@ public class InodeTreeBufferedIterator implements Iterator<Journal.JournalEntry>
   @Override
   public void remove() {
     throw new UnsupportedOperationException("remove is not supported in inode tree iterator");
+  }
+
+  @Override
+  public void close() {
+    LOG.info("Closing {} inode tree iterators", mActiveCrawlers.size());
+    mCoordinatorExecutor.shutdownNow();
+    mThreadPool.shutdownNow();
   }
 }

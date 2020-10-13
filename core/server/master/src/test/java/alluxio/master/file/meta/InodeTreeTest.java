@@ -46,6 +46,7 @@ import alluxio.master.metastore.InodeStore;
 import alluxio.master.metrics.MetricsMaster;
 import alluxio.master.metrics.MetricsMasterFactory;
 import alluxio.proto.journal.Journal;
+import alluxio.resource.CloseableIterator;
 import alluxio.security.authorization.Mode;
 import alluxio.underfs.UfsManager;
 import alluxio.util.CommonUtils;
@@ -750,16 +751,17 @@ public final class InodeTreeTest {
 
   // helper for verifying that correct objects were journaled to the output stream
   private static void verifyJournal(InodeTree root, List<MutableInode<?>> journaled) {
-    Iterator<alluxio.proto.journal.Journal.JournalEntry> it = root.getJournalEntryIterator();
-    // Read entries from InodeTree.
-    List<Journal.JournalEntry> treeEntries = new LinkedList<>();
-    while (it.hasNext()) {
-      treeEntries.add(it.next());
-    }
+    try (CloseableIterator<Journal.JournalEntry> it = root.getJournalEntryIterator()) {
+      // Read entries from InodeTree.
+      List<Journal.JournalEntry> treeEntries = new LinkedList<>();
+      while (it.get().hasNext()) {
+        treeEntries.add(it.get().next());
+      }
 
-    // Validate InodeTree entries match given entries.
-    for (MutableInode<?> node : journaled) {
-      assertTrue(treeEntries.contains(node.toJournalEntry()));
+      // Validate InodeTree entries match given entries.
+      for (MutableInode<?> node : journaled) {
+        assertTrue(treeEntries.contains(node.toJournalEntry()));
+      }
     }
   }
 

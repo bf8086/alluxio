@@ -14,6 +14,7 @@ package alluxio.master.journal;
 import alluxio.master.journal.checkpoint.CheckpointInputStream;
 import alluxio.master.journal.checkpoint.CheckpointName;
 import alluxio.proto.journal.Journal.JournalEntry;
+import alluxio.resource.CloseableIterator;
 import alluxio.util.StreamUtils;
 
 import com.google.common.collect.Iterators;
@@ -82,9 +83,9 @@ public class JournaledGroup implements Journaled {
   }
 
   @Override
-  public Iterator<JournalEntry> getJournalEntryIterator() {
-    List<Iterator<JournalEntry>> componentIters = StreamUtils
+  public CloseableIterator<JournalEntry> getJournalEntryIterator() {
+    List<CloseableIterator<JournalEntry>> componentIters = StreamUtils
         .map(JournalEntryIterable::getJournalEntryIterator, mJournaled);
-    return Iterators.concat(componentIters.iterator());
+    return CloseableIterator.concat(componentIters);
   }
 }
