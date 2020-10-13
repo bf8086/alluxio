@@ -20,6 +20,8 @@ import alluxio.util.ThreadFactoryUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.Closeable;
+import java.io.IOException;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -44,7 +46,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * makes applying those entries later more efficient by guaranteeing that a parent of an inode is
  * iterated before it.
  */
-public class InodeTreeBufferedIterator implements Iterator<Journal.JournalEntry> {
+public class InodeTreeBufferedIterator implements Iterator<Journal.JournalEntry>, Closeable {
   private static final Logger LOG = LoggerFactory.getLogger(InodeTreeBufferedIterator.class);
 
   // Used to signal end of iteration.
@@ -266,6 +268,7 @@ public class InodeTreeBufferedIterator implements Iterator<Journal.JournalEntry>
           return mNextElements.size() > 0;
         }
       } catch (InterruptedException ie) {
+        mActiveCrawlers.forEach((future) -> future.cancel(true));
         // Continue interrupt chain.
         Thread.currentThread().interrupt();
         throw new RuntimeException("Thread interrupted while taking an entry from buffer.");
@@ -301,5 +304,11 @@ public class InodeTreeBufferedIterator implements Iterator<Journal.JournalEntry>
   @Override
   public void remove() {
     throw new UnsupportedOperationException("remove is not supported in inode tree iterator");
+  }
+
+  @Override
+  public void close() {
+    mActiveCrawlers.forEach((future) -> future.cancel(true));
+    mCoordinatorExecutor.shutdownNow();
   }
 }

@@ -12,6 +12,7 @@
 package alluxio.master.journal;
 
 import alluxio.proto.journal.Journal;
+import alluxio.resource.CloseableIterator;
 
 import java.util.Iterator;
 
@@ -22,5 +23,5 @@ public interface JournalEntryIterable {
   /**
    * @return an {@link Iterator} that iterates all the journal entries
    */
-  Iterator<Journal.JournalEntry> getJournalEntryIterator();
+  CloseableIterator<Journal.JournalEntry> getJournalEntryIterator();
 }
