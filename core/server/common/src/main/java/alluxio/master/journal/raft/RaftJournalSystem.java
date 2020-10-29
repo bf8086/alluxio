@@ -324,6 +324,8 @@ public class RaftJournalSystem extends AbstractJournalSystem {
                 .getMs(PropertyKey.MASTER_EMBEDDED_JOURNAL_TRANSPORT_REQUEST_TIMEOUT_MS),
             TimeUnit.MILLISECONDS));
 
+    RaftServerConfigKeys.RetryCache.setExpiryTime(properties, leaderElectionMinTimeout.multiply(2));
+
     // snapshot retention
     RaftServerConfigKeys.Snapshot.setRetentionFileNum(properties, 3);
 
