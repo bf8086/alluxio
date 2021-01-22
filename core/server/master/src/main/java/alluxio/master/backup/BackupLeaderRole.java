@@ -281,12 +281,15 @@ public class BackupLeaderRole extends AbstractBackupRole {
     for (Map.Entry<GrpcMessagingConnection, String> workerEntry
         : mBackupWorkerHostNames.entrySet()) {
       try {
-        // Suspend journals on current follower.
-        LOG.info("Suspending journals at backup-worker: {}", workerEntry.getValue());
-        sendMessageBlocking(workerEntry.getKey(), new BackupSuspendMessage());
         // Get consistent journal sequences.
         Map<String, Long> journalSequences;
         try (LockResource stateLockResource = mStateLockManager.lockExclusive(stateLockOptions)) {
+          // Suspend journals on current follower. Doing it while holding the state lock to avoid
+          // worker journal suspend timeout while master attempts exclusive lock in busy hours.
+          // Doing it before releasing of the lock to guarantee worker can catch up to consistent
+          // state marked by the journal sequence numbers.
+          LOG.info("Suspending journals at backup-worker: {}", workerEntry.getValue());
+          sendMessageBlocking(workerEntry.getKey(), new BackupSuspendMessage());
           journalSequences = mJournalSystem.getCurrentSequenceNumbers();
         }
         // Send backup request along with consistent journal sequences.
