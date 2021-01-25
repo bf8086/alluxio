@@ -263,18 +263,24 @@ public class StateLockManager {
     if (!mInterruptCycleEnabled) {
       return;
     }
+    LOG.info("Thread-{} deactivating the cycles.",
+        ThreadUtils.getCurrentThreadIdentifier());
     try (LockResource lr = new LockResource(mInterruptCycleLock)) {
+      LOG.info("Interrupt cycle: entered lock.");
       Preconditions.checkArgument(mInterruptCycleRefCount > 0);
       // Don't do anything if there are exclusive lockers.
       if (--mInterruptCycleRefCount > 0) {
         return;
       }
       // Cancel the cycle.
+      LOG.info("Interrupt cycle: cancel future.");
       mInterrupterFuture.cancel(true);
+      LOG.info("Interrupt cycle: future canceled.");
       mInterruptCycleTicking.set(false);
       LOG.info("Interrupt cycle deactivated.");
       mInterrupterFuture = null;
     }
+    LOG.info("Interrupt cycle: exit lock.");
   }
 
   /**
