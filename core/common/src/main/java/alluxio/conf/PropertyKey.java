@@ -1371,7 +1371,7 @@ public final class PropertyKey implements Comparable<PropertyKey> {
           .build();
   public static final PropertyKey MASTER_BACKUP_SUSPEND_TIMEOUT =
       new Builder(Name.MASTER_BACKUP_SUSPEND_TIMEOUT)
-          .setDefaultValue("15sec")
+          .setDefaultValue("60sec")
           .setDescription("Timeout for when suspend request is not followed by a backup request.")
           .setConsistencyCheckLevel(ConsistencyCheckLevel.IGNORE)
           .setScope(Scope.MASTER)
