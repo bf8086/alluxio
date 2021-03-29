@@ -151,9 +151,10 @@ public class RaftJournalDumper extends AbstractJournalDumper {
     if (entry == null) {
       return;
     }
+    int expectedCount = entry.hasRequestId() ? 2 : 1;
     Preconditions.checkState(
-        entry.getAllFields().size() <= 1
-            || (entry.getAllFields().size() == 2 && entry.hasSequenceNumber()),
+        entry.getAllFields().size() <= expectedCount
+            || (entry.getAllFields().size() == expectedCount + 1 && entry.hasSequenceNumber()),
         "Raft journal entries should never set multiple fields in addition to sequence "
             + "number, but found %s",
         entry);

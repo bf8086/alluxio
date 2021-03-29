@@ -16,7 +16,7 @@ import "proto/journal/table.proto";
 // and Spark. We use protobuf version 2.5.0 instead, which is compatible with Hadoop and Spark.
 //
 
-// next available id: 52
+// next available id: 53
 message JournalEntry {
   optional int64 sequence_number = 1;
   optional ActiveSyncTxIdEntry active_sync_tx_id = 34;
@@ -59,4 +59,5 @@ message JournalEntry {
   // This journal entry is a list of other entries. when a journal entry
   // contains other journal entries, all other optional fields must be unset.
   repeated JournalEntry journal_entries = 39;
+  optional string request_id = 52;
 }

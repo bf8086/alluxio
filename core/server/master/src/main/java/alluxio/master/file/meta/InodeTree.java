@@ -70,6 +70,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.locks.Lock;
 import java.util.function.Supplier;
 
@@ -1209,6 +1210,10 @@ public class InodeTree implements DelegatingJournaled {
       }
     });
     dir.setPersistenceState(PersistenceState.PERSISTED);
+  }
+
+  public Map<String, CompletableFuture> getRetryCache() {
+    return mState.getRetryCache();
   }
 
   /**

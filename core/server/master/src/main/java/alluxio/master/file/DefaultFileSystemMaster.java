@@ -44,6 +44,8 @@ import alluxio.exception.status.PermissionDeniedException;
 import alluxio.exception.status.ResourceExhaustedException;
 import alluxio.exception.status.UnavailableException;
 import alluxio.file.options.DescendantType;
+import alluxio.grpc.ClientRequestIdInjector;
+import alluxio.grpc.ClientRequestIdInterceptor;
 import alluxio.grpc.DeletePOptions;
 import alluxio.grpc.FileSystemMasterCommonPOptions;
 import alluxio.grpc.GrpcService;
@@ -198,11 +200,14 @@ import java.util.SortedMap;
 import java.util.Stack;
 import java.util.TreeMap;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -373,6 +378,7 @@ public final class DefaultFileSystemMaster extends CoreMaster
 
   /** List of strings which are blacklisted from async persist. */
   private final List<String> mPersistBlacklist;
+  private final Map<String, CompletableFuture> mRetryCache;
 
   /** Thread pool which asynchronously handles the completion of persist jobs. */
   private java.util.concurrent.ThreadPoolExecutor mPersistCheckerPool;
@@ -440,7 +446,7 @@ public final class DefaultFileSystemMaster extends CoreMaster
     mInodeStore = new DelegatingReadOnlyInodeStore(inodeStore);
     mInodeTree = new InodeTree(inodeStore, mBlockMaster,
         mDirectoryIdGenerator, mMountTable, mInodeLockManager);
-
+    mRetryCache = mInodeTree.getRetryCache();
     // TODO(gene): Handle default config value for whitelist.
     mWhitelist = new PrefixList(ServerConfiguration.getList(PropertyKey.MASTER_WHITELIST, ","));
     mPersistBlacklist = ServerConfiguration.isSet(PropertyKey.MASTER_PERSISTENCE_BLACKLIST)
@@ -514,8 +520,11 @@ public final class DefaultFileSystemMaster extends CoreMaster
   @Override
   public Map<ServiceType, GrpcService> getServices() {
     Map<ServiceType, GrpcService> services = new HashMap<>();
-    services.put(ServiceType.FILE_SYSTEM_MASTER_CLIENT_SERVICE, new GrpcService(ServerInterceptors
-        .intercept(new FileSystemMasterClientServiceHandler(this), new ClientIpAddressInjector())));
+    services.put(ServiceType.FILE_SYSTEM_MASTER_CLIENT_SERVICE, new GrpcService(
+        ServerInterceptors.intercept(
+            ServerInterceptors.intercept(
+                new FileSystemMasterClientServiceHandler(this), new ClientIpAddressInjector()),
+            new ClientRequestIdInjector())));
     services.put(ServiceType.FILE_SYSTEM_MASTER_JOB_SERVICE,
         new GrpcService(new FileSystemMasterJobServiceHandler(this)));
     services.put(ServiceType.FILE_SYSTEM_MASTER_WORKER_SERVICE,
@@ -1654,6 +1663,11 @@ public final class DefaultFileSystemMaster extends CoreMaster
       throws IOException, FileDoesNotExistException, DirectoryNotEmptyException,
       InvalidPathException, AccessControlException {
     Metrics.DELETE_PATHS_OPS.inc();
+    CompletableFuture<Void> future = waitForComplete();
+    if (future.isDone()) {
+      future.join();
+      return;
+    }
     try (RpcContext rpcContext = createRpcContext(context);
         FileSystemMasterAuditContext auditContext =
             createAuditContext("delete", path, null, null)) {
@@ -1703,8 +1717,12 @@ public final class DefaultFileSystemMaster extends CoreMaster
         }
 
         deleteInternal(rpcContext, inodePath, context);
+        future.complete(null);
         auditContext.setSucceeded(true);
       }
+    } catch (Exception e) {
+      future.completeExceptionally(e);
+      throw e;
     }
   }
 
@@ -2105,11 +2123,33 @@ public final class DefaultFileSystemMaster extends CoreMaster
     return false;
   }
 
+  private <T> CompletableFuture<T> waitForComplete() {
+    AtomicBoolean exist = new AtomicBoolean();
+    CompletableFuture<T> response = mRetryCache.compute(
+        ClientRequestIdInjector.getKey(), (k, v) -> {
+      if (k != null && v != null) {
+        LOG.info("Found retry entry for request {}", ClientRequestIdInjector.getKey());
+        exist.set(true);
+        return v;
+      }
+      LOG.info("Created new retry entry for request {}", ClientRequestIdInjector.getKey());
+      return new CompletableFuture<T>();
+    });
+    if (exist.get() && !response.isDone()) {
+      response.join();
+    }
+    return response;
+  }
+
   @Override
   public long createDirectory(AlluxioURI path, CreateDirectoryContext context)
       throws InvalidPathException, FileAlreadyExistsException, IOException, AccessControlException,
       FileDoesNotExistException {
     Metrics.CREATE_DIRECTORIES_OPS.inc();
+    CompletableFuture<Long> future = waitForComplete();
+    if (future.isDone()) {
+      return future.join();
+    }
     try (RpcContext rpcContext = createRpcContext(context);
         FileSystemMasterAuditContext auditContext =
             createAuditContext("mkdir", path, null, null)) {
@@ -2145,8 +2185,12 @@ public final class DefaultFileSystemMaster extends CoreMaster
         }
         createDirectoryInternal(rpcContext, inodePath, context);
         auditContext.setSrcInode(inodePath.getInode()).setSucceeded(true);
+        future.complete(inodePath.getInode().getId());
         return inodePath.getInode().getId();
       }
+    } catch (Exception e) {
+      future.completeExceptionally(e);
+      throw e;
     }
   }
 

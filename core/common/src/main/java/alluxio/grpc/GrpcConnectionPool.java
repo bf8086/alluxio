@@ -173,6 +173,7 @@ public class GrpcConnectionPool {
     // Apply default channel options for the multiplex group.
     channelBuilder = applyGroupDefaults(channelKey, channelBuilder, conf);
     // Build netty managed channel.
+    channelBuilder.intercept(new ClientRequestIdInterceptor());
     return channelBuilder.build();
   }
 

@@ -14,6 +14,7 @@ package alluxio.master.file.meta;
 import alluxio.ProcessUtils;
 import alluxio.conf.PropertyKey;
 import alluxio.conf.ServerConfiguration;
+import alluxio.grpc.ClientRequestIdInjector;
 import alluxio.master.journal.JournalContext;
 import alluxio.master.journal.JournalUtils;
 import alluxio.master.journal.Journaled;
@@ -56,9 +57,12 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
 /**
@@ -98,6 +102,8 @@ public class InodeTreePersistentState implements Journaled {
    */
   // TODO(andrew): Move ownership of the ttl bucket list to this class
   private final TtlBucketList mTtlBuckets;
+
+  private Map<String, CompletableFuture> mRetryCache = new ConcurrentHashMap<>();
 
   /**
    * @param inodeStore file store which holds inode metadata
@@ -164,7 +170,15 @@ public class InodeTreePersistentState implements Journaled {
     // creation entry because delete requires a write lock on the deleted file, but the create
     // operation holds that lock until after it has appended to the journal.
     try {
-      context.get().append(JournalEntry.newBuilder().setDeleteFile(entry).build());
+      if (ClientRequestIdInjector.hasKey()) {
+        String key = ClientRequestIdInjector.getKey();
+        LOG.info("Journaling delete request id {}", key);
+        context.get().append(JournalEntry.newBuilder().setDeleteFile(entry)
+            .setRequestId(key).build());
+        LOG.info("Journaled delete request id {}", key);
+      } else {
+        context.get().append(JournalEntry.newBuilder().setDeleteFile(entry).build());
+      }
       applyDelete(entry);
     } catch (Throwable t) {
       // Delete entries should always apply cleanly, but if it somehow fails, we are in a state
@@ -233,8 +247,19 @@ public class InodeTreePersistentState implements Journaled {
   public void applyAndJournal(Supplier<JournalContext> context, UpdateInodeEntry entry) {
     try {
       applyUpdateInode(entry);
-      context.get().append(JournalEntry.newBuilder().setUpdateInode(entry).build());
+      if (ClientRequestIdInjector.hasKey()) {
+        String key = ClientRequestIdInjector.getKey();
+        LOG.info("Journaling request id {}", key);
+        context.get().append(JournalEntry.newBuilder().setUpdateInode(entry)
+            .setRequestId(key).build());
+//        context.get().append(JournalEntry.newBuilder().setUpdateInode(entry).build());
+        LOG.info("Journaled request id {}", key);
+      } else {
+        LOG.info("No request id journaled");
+        context.get().append(JournalEntry.newBuilder().setUpdateInode(entry).build());
+      }
     } catch (Throwable t) {
+      LOG.error("error journaling updateInode", t);
       ProcessUtils.fatalError(LOG, t, "Failed to apply %s", entry);
       throw t; // fatalError will usually system.exit
     }
@@ -674,6 +699,7 @@ public class InodeTreePersistentState implements Journaled {
   @Override
   public boolean processJournalEntry(JournalEntry entry) {
     if (entry.hasDeleteFile()) {
+      UpdateRetryCache(entry);
       applyDelete(entry.getDeleteFile());
     } else if (entry.hasInodeDirectory()) {
       applyCreateDirectory(entry.getInodeDirectory());
@@ -686,6 +712,7 @@ public class InodeTreePersistentState implements Journaled {
     } else if (entry.hasSetAcl()) {
       applySetAcl(entry.getSetAcl());
     } else if (entry.hasUpdateInode()) {
+      UpdateRetryCache(entry);
       applyUpdateInode(entry.getUpdateInode());
     } else if (entry.hasUpdateInodeDirectory()) {
       applyUpdateInodeDirectory(entry.getUpdateInodeDirectory());
@@ -706,6 +733,15 @@ public class InodeTreePersistentState implements Journaled {
       return false;
     }
     return true;
+  }
+
+  private void UpdateRetryCache(JournalEntry entry) {
+    if (entry.hasRequestId()) {
+      CompletableFuture<Long> future = new CompletableFuture<Long>();
+      future.complete(entry.getUpdateInode().getId());
+      LOG.info("Added retry log for inode {}, request {}", future.join(), entry.getRequestId());
+      mRetryCache.put(entry.getRequestId(), future);
+    }
   }
 
   @Override
@@ -739,5 +775,9 @@ public class InodeTreePersistentState implements Journaled {
   @Override
   public CheckpointName getCheckpointName() {
     return CheckpointName.INODE_TREE;
+  }
+
+  public Map<String, CompletableFuture> getRetryCache() {
+    return mRetryCache;
   }
 }

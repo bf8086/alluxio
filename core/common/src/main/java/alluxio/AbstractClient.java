@@ -20,6 +20,7 @@ import alluxio.exception.status.FailedPreconditionException;
 import alluxio.exception.status.NotFoundException;
 import alluxio.exception.status.UnauthenticatedException;
 import alluxio.exception.status.UnavailableException;
+import alluxio.grpc.ClientRequestIdInterceptor;
 import alluxio.grpc.GetServiceVersionPRequest;
 import alluxio.grpc.GrpcChannel;
 import alluxio.grpc.GrpcChannelBuilder;
@@ -44,6 +45,8 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.channels.UnresolvedAddressException;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 import javax.annotation.concurrent.ThreadSafe;
@@ -88,6 +91,9 @@ public abstract class AbstractClient implements Client {
 
   private final long mRpcThreshold;
 
+  private final AtomicInteger mRequestId = new AtomicInteger();
+
+  private final UUID mClientId = UUID.randomUUID();
   /**
    * Creates a new client base.
    *
@@ -115,6 +121,7 @@ public abstract class AbstractClient implements Client {
     mRetryPolicySupplier = retryPolicySupplier;
     mServiceVersion = Constants.UNKNOWN_SERVICE_VERSION;
     mRpcThreshold = mContext.getClusterConf().getMs(PropertyKey.USER_LOGGING_THRESHOLD);
+    LOG.info("new client {}", mClientId);
   }
 
   /**
@@ -234,11 +241,11 @@ public abstract class AbstractClient implements Client {
         mConnected = true;
         afterConnect();
         checkVersion(getServiceVersion());
-        LOG.debug("Alluxio client (version {}) is connected with {} @ {}", RuntimeConstants.VERSION,
+        LOG.info("Alluxio client (version {}) is connected with {} @ {}", RuntimeConstants.VERSION,
             getServiceName(), mAddress);
         return;
       } catch (IOException e) {
-        LOG.debug("Failed to connect ({}) with {} @ {}: {}", retryPolicy.getAttemptCount(),
+        LOG.info("Failed to connect ({}) with {} @ {}: {}", retryPolicy.getAttemptCount(),
             getServiceName(), mAddress, e.getMessage());
         lastConnectFailure = e;
         if (e instanceof UnauthenticatedException) {
@@ -360,20 +367,27 @@ public abstract class AbstractClient implements Client {
     return retryRPC(mRetryPolicySupplier.get(), rpc, logger, rpcName, description, args);
   }
 
+  protected int newRequest() {
+    return mRequestId.incrementAndGet();
+  }
+
   protected synchronized <V> V retryRPC(RetryPolicy retryPolicy, RpcCallable<V> rpc,
       Logger logger, String rpcName, String description, Object... args)
       throws AlluxioStatusException {
+    int requestId = newRequest();
+    ClientRequestIdInterceptor.setRequestId(requestId);
+    ClientRequestIdInterceptor.setClientId(mClientId);
     String debugDesc = logger.isDebugEnabled() ? String.format(description, args) : null;
     // TODO(binfan): create RPC context so we could get RPC duration from metrics timer directly
     long startMs = System.currentTimeMillis();
-    logger.debug("Enter: {}({})", rpcName, debugDesc);
+    logger.info("Enter: [{}]{}({})", requestId, rpcName, debugDesc);
     try (Timer.Context ctx = MetricsSystem.timer(getQualifiedMetricName(rpcName)).time()) {
       V ret = retryRPCInternal(retryPolicy, rpc, () -> {
         MetricsSystem.counter(getQualifiedRetryMetricName(rpcName)).inc();
         return null;
       });
       long duration = System.currentTimeMillis() - startMs;
-      logger.debug("Exit (OK): {}({}) in {} ms", rpcName, debugDesc, duration);
+      logger.info("Exit (OK): [{}]{}({}) in {} ms", requestId, rpcName, debugDesc, duration);
       if (duration >= mRpcThreshold) {
         logger.warn("{}({}) returned {} in {} ms (>={} ms)",
             rpcName, String.format(description, args), ret, duration, mRpcThreshold);
@@ -382,11 +396,11 @@ public abstract class AbstractClient implements Client {
     } catch (Exception e) {
       long duration = System.currentTimeMillis() - startMs;
       MetricsSystem.counter(getQualifiedFailureMetricName(rpcName)).inc();
-      logger.debug("Exit (ERROR): {}({}) in {} ms: {}",
-          rpcName, debugDesc, duration, e.toString());
+      logger.info("Exit (ERROR): [{}]{}({}) in {} ms: {}",
+          requestId, rpcName, debugDesc, duration, e.toString());
       if (duration >= mRpcThreshold) {
-        logger.warn("{}({}) exits with exception [{}] in {} ms (>={}ms)",
-            rpcName, String.format(description, args), e.toString(), duration, mRpcThreshold);
+        logger.warn("[{}]{}({}) exits with exception [{}] in {} ms (>={}ms)",
+            requestId, rpcName, String.format(description, args), e.toString(), duration, mRpcThreshold);
       }
       throw e;
     }

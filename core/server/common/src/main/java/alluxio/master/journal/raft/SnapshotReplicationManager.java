@@ -442,6 +442,9 @@ public class SnapshotReplicationManager {
                   .newBuilder()
                   .setSnapshotInfoRequest(GetSnapshotInfoRequest.getDefaultInstance())
                   .build()))));
+      if (jobs.size() < 1) {
+        LOG.warn("No follower found, skip snapshot requesting. Please consider taking snapshot manually.");
+      }
       for (Map.Entry<RaftPeerId, CompletableFuture<RaftClientReply>> job : jobs.entrySet()) {
         RaftPeerId peerId = job.getKey();
         RaftClientReply reply;
