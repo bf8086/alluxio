@@ -1720,9 +1720,9 @@ public final class DefaultFileSystemMaster extends CoreMaster
         future.complete(null);
         auditContext.setSucceeded(true);
       }
-    } catch (Exception e) {
-      future.completeExceptionally(e);
-      throw e;
+//    } catch (Exception e) {
+//      future.completeExceptionally(e);
+//      throw e;
     }
   }
 
@@ -2188,9 +2188,9 @@ public final class DefaultFileSystemMaster extends CoreMaster
         future.complete(inodePath.getInode().getId());
         return inodePath.getInode().getId();
       }
-    } catch (Exception e) {
-      future.completeExceptionally(e);
-      throw e;
+//    } catch (Exception e) {
+//      future.completeExceptionally(e);
+//      throw e;
     }
   }
 
