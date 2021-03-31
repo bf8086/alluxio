@@ -1664,7 +1664,7 @@ public final class DefaultFileSystemMaster extends CoreMaster
       InvalidPathException, AccessControlException {
     Metrics.DELETE_PATHS_OPS.inc();
     CompletableFuture<Void> future = waitForComplete();
-    if (future.isDone()) {
+    if (future.isDone() && !future.isCompletedExceptionally()) {
       future.join();
       return;
     }
@@ -1720,9 +1720,10 @@ public final class DefaultFileSystemMaster extends CoreMaster
         future.complete(null);
         auditContext.setSucceeded(true);
       }
-//    } catch (Exception e) {
-//      future.completeExceptionally(e);
-//      throw e;
+    } finally {
+      if (!future.isDone()) {
+        future.cancel(false);
+      }
     }
   }
 
@@ -2147,7 +2148,7 @@ public final class DefaultFileSystemMaster extends CoreMaster
       FileDoesNotExistException {
     Metrics.CREATE_DIRECTORIES_OPS.inc();
     CompletableFuture<Long> future = waitForComplete();
-    if (future.isDone()) {
+    if (future.isDone() && !future.isCompletedExceptionally()) {
       return future.join();
     }
     try (RpcContext rpcContext = createRpcContext(context);
@@ -2188,9 +2189,10 @@ public final class DefaultFileSystemMaster extends CoreMaster
         future.complete(inodePath.getInode().getId());
         return inodePath.getInode().getId();
       }
-//    } catch (Exception e) {
-//      future.completeExceptionally(e);
-//      throw e;
+    } finally {
+      if (!future.isDone()) {
+        future.cancel(false);
+      }
     }
   }
 
