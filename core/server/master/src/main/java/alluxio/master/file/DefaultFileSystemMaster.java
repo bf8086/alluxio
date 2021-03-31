@@ -202,6 +202,7 @@ import java.util.TreeMap;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -1664,8 +1665,7 @@ public final class DefaultFileSystemMaster extends CoreMaster
       InvalidPathException, AccessControlException {
     Metrics.DELETE_PATHS_OPS.inc();
     CompletableFuture<Void> future = waitForComplete();
-    if (future.isDone() && !future.isCompletedExceptionally()) {
-      future.join();
+    if (future.isDone()) {
       return;
     }
     try (RpcContext rpcContext = createRpcContext(context);
@@ -2128,7 +2128,7 @@ public final class DefaultFileSystemMaster extends CoreMaster
     AtomicBoolean exist = new AtomicBoolean();
     CompletableFuture<T> response = mRetryCache.compute(
         ClientRequestIdInjector.getKey(), (k, v) -> {
-      if (k != null && v != null) {
+      if (v != null) {
         LOG.info("Found retry entry for request {}", ClientRequestIdInjector.getKey());
         exist.set(true);
         return v;
@@ -2137,7 +2137,16 @@ public final class DefaultFileSystemMaster extends CoreMaster
       return new CompletableFuture<T>();
     });
     if (exist.get() && !response.isDone()) {
-      response.join();
+      try {
+        response.get();
+      } catch (InterruptedException e) {
+        e.printStackTrace();
+      } catch (ExecutionException e) {
+        e.printStackTrace();
+      }
+    }
+    if (response.isCompletedExceptionally()) {
+      return waitForComplete();
     }
     return response;
   }
@@ -2148,7 +2157,7 @@ public final class DefaultFileSystemMaster extends CoreMaster
       FileDoesNotExistException {
     Metrics.CREATE_DIRECTORIES_OPS.inc();
     CompletableFuture<Long> future = waitForComplete();
-    if (future.isDone() && !future.isCompletedExceptionally()) {
+    if (future.isDone()) {
       return future.join();
     }
     try (RpcContext rpcContext = createRpcContext(context);

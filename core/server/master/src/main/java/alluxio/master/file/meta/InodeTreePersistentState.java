@@ -746,6 +746,7 @@ public class InodeTreePersistentState implements Journaled {
 
   @Override
   public void resetState() {
+    mRetryCache.clear();
     mInodeStore.clear();
     mReplicationLimitedFileIds.clear();
     mPinnedInodeFileIds.clear();
