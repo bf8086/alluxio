@@ -2158,6 +2158,8 @@ public final class DefaultFileSystemMaster extends CoreMaster
     Metrics.CREATE_DIRECTORIES_OPS.inc();
     CompletableFuture<Long> future = waitForComplete();
     if (future.isDone()) {
+      LOG.info("[{}] createDirectory returned existing result for {}",
+          ClientRequestIdInjector.getKey(), path);
       return future.join();
     }
     try (RpcContext rpcContext = createRpcContext(context);

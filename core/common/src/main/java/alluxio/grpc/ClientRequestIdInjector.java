@@ -50,7 +50,7 @@ public class ClientRequestIdInjector implements ServerInterceptor {
   }
 
   public static String getKey() {
-    return String.format("%s-%d", getClientId().toString(), getRequestId());
+    return hasKey() ? String.format("%s-%d", getClientId(), getRequestId()) : "N/A";
   }
 
   @Override

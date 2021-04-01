@@ -85,6 +85,10 @@ public final class ClientRequestIdInterceptor implements ClientInterceptor {
     tClientId.set(clientId);
   }
 
+  public static String getKey() {
+    return String.format("%s-%d", tClientId.get(), tRequestId.get());
+  }
+
   @Override
   public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(MethodDescriptor<ReqT, RespT> method,
       CallOptions callOptions, Channel next) {

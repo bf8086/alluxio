@@ -377,17 +377,17 @@ public abstract class AbstractClient implements Client {
     int requestId = newRequest();
     ClientRequestIdInterceptor.setRequestId(requestId);
     ClientRequestIdInterceptor.setClientId(mClientId);
-    String debugDesc = logger.isDebugEnabled() ? String.format(description, args) : null;
+    String debugDesc = String.format(description, args);
     // TODO(binfan): create RPC context so we could get RPC duration from metrics timer directly
     long startMs = System.currentTimeMillis();
-    logger.info("Enter: [{}]{}({})", requestId, rpcName, debugDesc);
+    logger.info("Enter: [{}]{}({})", ClientRequestIdInterceptor.getKey(), rpcName, debugDesc);
     try (Timer.Context ctx = MetricsSystem.timer(getQualifiedMetricName(rpcName)).time()) {
       V ret = retryRPCInternal(retryPolicy, rpc, () -> {
         MetricsSystem.counter(getQualifiedRetryMetricName(rpcName)).inc();
         return null;
       });
       long duration = System.currentTimeMillis() - startMs;
-      logger.info("Exit (OK): [{}]{}({}) in {} ms", requestId, rpcName, debugDesc, duration);
+      logger.info("Exit (OK): [{}]{}({}) in {} ms", ClientRequestIdInterceptor.getKey(), rpcName, debugDesc, duration);
       if (duration >= mRpcThreshold) {
         logger.warn("{}({}) returned {} in {} ms (>={} ms)",
             rpcName, String.format(description, args), ret, duration, mRpcThreshold);
@@ -397,7 +397,7 @@ public abstract class AbstractClient implements Client {
       long duration = System.currentTimeMillis() - startMs;
       MetricsSystem.counter(getQualifiedFailureMetricName(rpcName)).inc();
       logger.info("Exit (ERROR): [{}]{}({}) in {} ms: {}",
-          requestId, rpcName, debugDesc, duration, e.toString());
+          ClientRequestIdInterceptor.getKey(), rpcName, debugDesc, duration, e.toString());
       if (duration >= mRpcThreshold) {
         logger.warn("[{}]{}({}) exits with exception [{}] in {} ms (>={}ms)",
             requestId, rpcName, String.format(description, args), e.toString(), duration, mRpcThreshold);
@@ -427,7 +427,7 @@ public abstract class AbstractClient implements Client {
           throw se;
         }
       }
-      LOG.debug("Rpc failed ({}): {}", retryPolicy.getAttemptCount(), ex.toString());
+      LOG.warn("[{}] Rpc failed ({}): {}", ClientRequestIdInterceptor.getKey(), retryPolicy.getAttemptCount(), ex.toString());
       onRetry.get();
       disconnect();
     }

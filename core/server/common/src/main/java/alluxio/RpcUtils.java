@@ -14,6 +14,7 @@ package alluxio;
 import alluxio.exception.AlluxioException;
 import alluxio.exception.status.AlluxioStatusException;
 import alluxio.exception.status.InternalException;
+import alluxio.grpc.ClientRequestIdInjector;
 import alluxio.metrics.Metric;
 import alluxio.metrics.MetricsSystem;
 import alluxio.security.User;
@@ -107,11 +108,11 @@ public final class RpcUtils {
       String methodName, boolean failureOk, String description, Object... args)
       throws StatusException {
     // avoid string format for better performance if debug is off
-    String debugDesc = logger.isDebugEnabled() ? String.format(description, args) : null;
+    String debugDesc = String.format(description, args) + " " + ClientRequestIdInjector.getKey();
     try (Timer.Context ctx = MetricsSystem.timer(getQualifiedMetricName(methodName)).time()) {
-      logger.debug("Enter: {}: {}", methodName, debugDesc);
+      logger.info("Enter: {}: {}", methodName, debugDesc);
       T res = callable.call();
-      logger.debug("Exit: {}: {}", methodName, debugDesc);
+      logger.info("Exit: {}: {}", methodName, debugDesc);
       return res;
     } catch (AlluxioException e) {
       logger.debug("Exit (Error): {}: {}", methodName, debugDesc, e);
